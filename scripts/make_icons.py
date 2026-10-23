@@ -7,7 +7,7 @@ import struct
 import zlib
 from pathlib import Path
 
-GRADIENT = ((0x4F, 0x46, 0xE5), (0xA8, 0x55, 0xF7))  # top-left to bottom-right
+GRADIENT = ((0x43, 0x38, 0xCA), (0x63, 0x66, 0xF1))  # top-left to bottom-right
 
 
 def background(px, py):

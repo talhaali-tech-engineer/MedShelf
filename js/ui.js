@@ -43,31 +43,26 @@ function svg(tag, attrs = {}, ...children) {
   return el;
 }
 
-let botCount = 0;
-
 /**
  * The animated assistant. States (animated in CSS): 'idle' floats and blinks,
  * 'thinking' scans its eyes, 'talking' moves its mouth.
  */
 export function bot(size = 36, state = 'idle') {
-  const fill = `url(#bot-head-${++botCount})`;
+  const head = '#4f46e5';
+  const face = '#eef2ff';
+  const features = '#1e1b4b';
   return svg('svg', { viewBox: '0 0 64 64', width: size, height: size, class: `bot ${state}`, 'aria-hidden': 'true', focusable: 'false' },
-    svg('defs', {},
-      svg('linearGradient', { id: `bot-head-${botCount}`, x1: '0', y1: '0', x2: '1', y2: '1' },
-        svg('stop', { offset: '0', 'stop-color': '#8b5cf6' }),
-        svg('stop', { offset: '1', 'stop-color': '#ec4899' }))),
     svg('g', { class: 'bot-body' },
-      svg('line', { x1: 32, y1: 8, x2: 32, y2: 15, stroke: fill, 'stroke-width': 3, 'stroke-linecap': 'round' }),
-      svg('circle', { class: 'bot-antenna-tip', cx: 32, cy: 6, r: 3.6, fill: '#f0abfc' }),
-      svg('rect', { x: 5, y: 28, width: 5, height: 12, rx: 2.5, fill }),
-      svg('rect', { x: 54, y: 28, width: 5, height: 12, rx: 2.5, fill }),
-      svg('rect', { x: 9, y: 14, width: 46, height: 38, rx: 15, fill }),
-      svg('rect', { x: 17, y: 16.5, width: 13, height: 3, rx: 1.5, fill: '#ffffff', opacity: 0.35 }),
-      svg('rect', { x: 15, y: 21, width: 34, height: 24, rx: 9, fill: '#0b1023' }),
+      svg('line', { x1: 32, y1: 9, x2: 32, y2: 15, stroke: head, 'stroke-width': 2.5, 'stroke-linecap': 'round' }),
+      svg('circle', { class: 'bot-antenna-tip', cx: 32, cy: 7, r: 3, fill: '#818cf8' }),
+      svg('rect', { x: 6, y: 29, width: 4, height: 11, rx: 2, fill: '#4338ca' }),
+      svg('rect', { x: 54, y: 29, width: 4, height: 11, rx: 2, fill: '#4338ca' }),
+      svg('rect', { x: 9, y: 15, width: 46, height: 37, rx: 12, fill: head }),
+      svg('rect', { x: 15, y: 22, width: 34, height: 23, rx: 8, fill: face }),
       svg('g', { class: 'bot-eyes' },
-        svg('rect', { class: 'bot-eye', x: 22, y: 27, width: 6, height: 9, rx: 3, fill: '#a5f3fc' }),
-        svg('rect', { class: 'bot-eye', x: 36, y: 27, width: 6, height: 9, rx: 3, fill: '#a5f3fc' })),
-      svg('path', { class: 'bot-mouth', d: 'M28.5 39.5 Q32 42.5 35.5 39.5', stroke: '#f0abfc', 'stroke-width': 2, 'stroke-linecap': 'round', fill: 'none' })));
+        svg('rect', { class: 'bot-eye', x: 23, y: 28, width: 5, height: 8, rx: 2.5, fill: features }),
+        svg('rect', { class: 'bot-eye', x: 36, y: 28, width: 5, height: 8, rx: 2.5, fill: features })),
+      svg('path', { class: 'bot-mouth', d: 'M29 39.5 Q32 41.8 35 39.5', stroke: features, 'stroke-width': 2, 'stroke-linecap': 'round', fill: 'none' })));
 }
 
 export function setBotState(el, state) {

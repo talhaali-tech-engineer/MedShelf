@@ -113,7 +113,7 @@ function medicineBadges(row) {
 
 function connectCard(text) {
   return card('connect-card',
-    bot(72),
+    bot(60),
     h('h2', {}, 'Connect AI'),
     h('p', { class: 'muted' }, text),
     btn('Connect a key', { icon: 'key', kind: 'primary', href: '#/data?section=ai' }));
@@ -240,7 +240,7 @@ function todoCard(s) {
 function briefingCard() {
   if (!aiConfig.provider) {
     return card('ai-card',
-      cardHead('AI briefing', { botNode: bot(38) }),
+      cardHead('Daily briefing', { botNode: bot(36) }),
       h('p', { class: 'muted' }, 'Connect your OpenAI or Claude key to get a plain-English plan for the day, scan invoices with your camera, and ask questions about your stock.'),
       btn('Connect AI', { icon: 'key', kind: 'primary', size: 'sm', href: '#/data?section=ai' }));
   }
@@ -249,9 +249,9 @@ function briefingCard() {
   briefingOut = out;
   paintBriefing(out);
   const busy = briefing?.busy;
-  briefingBot = bot(38, busy ? (briefing.text ? 'talking' : 'thinking') : 'idle');
+  briefingBot = bot(36, busy ? (briefing.text ? 'talking' : 'thinking') : 'idle');
   return card('ai-card',
-    cardHead('AI briefing', {
+    cardHead('Daily briefing', {
       botNode: briefingBot,
       sub: `${ai.PROVIDERS[aiConfig.provider].name} · ${aiConfig.model}`,
       actions: [btn(briefing?.text ? 'Refresh' : "Write today's plan", {
@@ -348,7 +348,7 @@ function viewWelcome() {
     h('span', { class: 'feature-icon' }, icon(iconName, 22)), h('strong', {}, title), h('p', {}, text));
   return h('div', { class: 'page welcome' },
     h('div', { class: 'hero' },
-      h('span', { class: 'eyebrow' }, icon('shield', 16), 'Free · works offline · your data stays on this device'),
+      h('span', { class: 'eyebrow' }, icon('shield', 16), 'Free and open source · Works offline · Data stays on your device'),
       h('h1', {}, 'Stop losing money to expired medicine'),
       h('p', { class: 'lead' }, 'MedShelf tracks every batch and its expiry date, sells the oldest stock first, warns you before medicine expires or runs out, and tells you exactly what to order.'),
       h('div', { class: 'actions' },
@@ -883,9 +883,9 @@ function viewAssistant() {
 
 function suggestions() {
   return h('div', { class: 'suggest' },
-    bot(96),
-    h('h2', {}, 'Hi! What would you like to know?'),
-    h('p', { class: 'muted' }, 'I can see your stock, expiry dates and sales. Ask me anything about them.'),
+    bot(72),
+    h('h2', {}, 'Ask about your stock'),
+    h('p', { class: 'muted' }, 'The assistant can see your stock levels, expiry dates and sales from the last 30 days.'),
     h('div', { class: 'suggest-list' }, SUGGESTIONS.map((q) => h('button', { type: 'button', class: 'suggest-item', onclick: () => act(() => ask(q)) },
       h('span', {}, q), icon('next', 16)))));
 }
@@ -1003,7 +1003,7 @@ function aiSettingsCard() {
   });
 
   const el = card('ai-settings',
-    cardHead('AI assistant', { botNode: bot(38), sub: aiConfig.provider ? `On · ${ai.PROVIDERS[aiConfig.provider].name} · ${aiConfig.model}` : 'Off' }),
+    cardHead('Assistant', { botNode: bot(36), sub: aiConfig.provider ? `On · ${ai.PROVIDERS[aiConfig.provider].name} · ${aiConfig.model}` : 'Off' }),
     h('div', { class: 'form plain' },
       h('div', { class: 'field' },
         h('span', { class: 'field-label' }, 'API key'),
