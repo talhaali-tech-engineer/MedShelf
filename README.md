@@ -8,7 +8,7 @@
 
 Free, offline-first stock and expiry tracking for small pharmacies and clinics,<br>with AI that reads your delivery invoices for you.
 
-[**Live demo**](https://talhaali-tech-engineer.github.io/MedShelf/) &nbsp;·&nbsp; [**Watch the video**](docs/medshelf-demo.mp4) &nbsp;·&nbsp; [Quick start](#quick-start) &nbsp;·&nbsp; [Features](#features)
+[**Live demo**](https://talhaali-tech-engineer.github.io/MedShelf/) &nbsp;·&nbsp; [**Watch the video**](https://talhaali-tech-engineer.github.io/MedShelf/docs/medshelf-demo.mp4) &nbsp;·&nbsp; [Quick start](#quick-start) &nbsp;·&nbsp; [Features](#features)
 
 [![Tests](https://github.com/talhaali-tech-engineer/MedShelf/actions/workflows/test.yml/badge.svg)](https://github.com/talhaali-tech-engineer/MedShelf/actions/workflows/test.yml)
 ![License: MIT](https://img.shields.io/badge/license-MIT-4f46e5)
@@ -16,7 +16,7 @@ Free, offline-first stock and expiry tracking for small pharmacies and clinics,<
 ![Works offline](https://img.shields.io/badge/works-offline-4f46e5)
 ![AI: OpenAI or Claude](https://img.shields.io/badge/AI-OpenAI%20or%20Claude-6d28d9)
 
-<a href="docs/medshelf-demo.mp4"><img src="docs/demo-poster.jpg" alt="Watch the 2-minute MedShelf demo" width="860"></a>
+<a href="https://talhaali-tech-engineer.github.io/MedShelf/docs/medshelf-demo.mp4"><img src="docs/demo-poster.jpg" alt="Watch the 2-minute MedShelf demo" width="860"></a>
 
 </div>
 

@@ -1,7 +1,7 @@
 // Offline support: serve the app from the cache, refresh the cache in the background.
 // Bump CACHE on every release so old files are dropped.
 
-const CACHE = 'medshelf-v5';
+const CACHE = 'medshelf-v6';
 const SHELL = [
   './',
   'index.html',
@@ -32,11 +32,19 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Only the app's own files are handled here. Everything else, such as the demo
+// video in docs/, goes straight to the network: videos stream in ranged pieces,
+// which can't be cached.
+const SHELL_PATHS = new Set(SHELL.map((p) => (p === './' ? '' : p)));
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
-  if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
+  const url = new URL(request.url);
+  if (request.method !== 'GET' || url.origin !== self.location.origin || request.headers.has('range')) return;
+  const path = url.pathname.slice(new URL(self.registration.scope).pathname.length);
+  if (!SHELL_PATHS.has(path)) return;
   const fresh = fetch(request).then(async (response) => {
-    if (response.ok) await (await caches.open(CACHE)).put(request, response.clone());
+    if (response.status === 200) await (await caches.open(CACHE)).put(request, response.clone());
     return response;
   });
   event.waitUntil(fresh.catch(() => {}));
