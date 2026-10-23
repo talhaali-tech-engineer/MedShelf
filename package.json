@@ -1,0 +1,12 @@
+{
+  "name": "medshelf",
+  "version": "0.1.0",
+  "description": "Medicine stock and expiry tracker for small pharmacies and clinics. Works offline; data stays on the device.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/serve.js",
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
