@@ -171,6 +171,21 @@ test('aiStockContext describes the stock but never includes notes', () => {
   assert.doesNotMatch(text, /J\.S\.|1042/);
 });
 
+test('matchMedicine finds stocked medicines however the paperwork writes them', () => {
+  const meds = [
+    { id: 'a', name: 'Amoxicillin', strength: '500 mg', form: 'Capsule' },
+    { id: 'b', name: 'Paracetamol', strength: '500 mg', form: 'Tablet' },
+    { id: 'c', name: 'Paracetamol', strength: '120 mg/5 ml', form: 'Suspension' },
+  ];
+  const id = (item) => core.matchMedicine(meds, item)?.id ?? null;
+  assert.equal(id({ name: 'Amoxicillin 500 mg', strength: '500 mg', form: 'Capsule' }), 'a');
+  assert.equal(id({ name: 'amoxicillin', strength: '500mg', form: 'Capsules' }), 'a');
+  assert.equal(id({ name: 'Paracetamol', strength: '500 mg', form: 'Tablets' }), 'b');
+  assert.equal(id({ name: 'Paracetamol', strength: '', form: '' }), null);
+  assert.equal(id({ name: 'Amoxicillin', strength: '250 mg', form: 'Capsule' }), null);
+  assert.equal(id({ name: 'Ibuprofen', strength: '400 mg', form: 'Tablet' }), null);
+});
+
 test('CSV round-trips and guards against spreadsheet formulas', () => {
   const rows = [['name', 'note'], ['Syrup, "kids"', '=HYPERLINK("x")'], ['Line\nbreak', '-5']];
   const csv = core.toCSV(rows);

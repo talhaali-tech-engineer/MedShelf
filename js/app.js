@@ -602,11 +602,17 @@ async function startScan(files, input) {
   scan = { status: 'reading', files: prepared, previews, controller: new AbortController() };
   render();
   try {
-    const result = await ai.scanDelivery(aiConfig, { files: prepared, known: state.medicines.map(label) }, { signal: scan.controller.signal });
+    const known = state.medicines.map((m) => `${m.name} | ${m.strength || '-'} | ${m.form || '-'}`);
+    const result = await ai.scanDelivery(aiConfig, { files: prepared, known }, { signal: scan.controller.signal });
     if (!result.items.length) throw new ai.AiError('No medicine lines were found. Try a sharper photo, taken closer to the page.');
     scan = {
       status: 'review', supplier: result.supplier, warnings: result.warnings,
-      rows: result.items.map((it) => ({ ...it, qty: it.qty ?? '', unitCost: it.unitCost ?? '' })),
+      rows: result.items.map((it) => {
+        // Use the shop's own spelling for medicines it already stocks, so no duplicates appear.
+        const match = core.matchMedicine(state.medicines, it);
+        const names = match ? { name: match.name, strength: match.strength, form: match.form } : {};
+        return { ...it, ...names, qty: it.qty ?? '', unitCost: it.unitCost ?? '' };
+      }),
     };
   } catch (err) {
     scan = err.name === 'AbortError' ? null : { status: 'error', error: err.message };
@@ -652,7 +658,7 @@ function reviewCard() {
       tr.classList.toggle('has-problem', Boolean(problem));
       status.replaceChildren(problem
         ? h('span', { class: 'problem' }, icon('alert', 16), h('span', {}, problem))
-        : h('span', { class: 'ready' }, icon('check', 16), h('span', {}, 'Ready')));
+        : h('span', { class: 'ready' }, icon('check', 16), h('span', {}, row.packs ? `Ready · ${row.packs}` : 'Ready')));
       refresh();
     };
     tr.append(

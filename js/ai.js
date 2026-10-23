@@ -80,14 +80,15 @@ export const BRIEFING_PROMPT = "Give me today's briefing: the three to five most
 
 const SCAN_SYSTEM = `You read delivery paperwork for a pharmacy or clinic: supplier invoices, delivery notes, and photos of medicine packs. List every medicine line that was received.
 
-For each line:
-- name: the medicine name as printed. If it is the same product as one in the shop's list, use exactly that name, strength and form.
+For each line, copy what is printed. Do not calculate anything.
+- name: the medicine name only, without the strength or form. If it is the same product as one in the shop's list, use that list's name.
 - strength: for example "500 mg", "100 mcg/dose" or "5 mg/5 ml". Empty if not shown.
 - form: for example Tablet, Capsule, Syrup, Inhaler, Injection, Cream or Sachet. Empty if not shown.
 - batch: the batch or lot number. Empty if not shown.
 - expiry: the expiry date as YYYY-MM-DD, or YYYY-MM when only the month is printed. Empty if not shown.
-- qty: how many units were received, counted the way the shop sells them. If a line gives packs and a pack size, multiply them and add a warning that you did. null if not shown.
-- unit_cost: the cost of one of those units before tax, as a number. null if not shown.
+- quantity: the quantity column as printed: how many packs or items were delivered. null if not shown.
+- pack_size: how many tablets, capsules or other units are in one pack, from a pack column or the description (for example "28" or "1 x 100"). null if not shown or if each item is a single unit, such as one inhaler or one bottle.
+- price: the price of one pack or item before tax, as printed. null if not shown.
 
 Never guess a batch number or an expiry date: leave it empty and add a warning when you cannot read it clearly. Skip lines that are not medicines, such as delivery charges, tax and totals. Put the supplier's name in "supplier", or leave it empty. Use "warnings" for short notes on anything unclear.
 
@@ -106,15 +107,16 @@ export const SCAN_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['name', 'strength', 'form', 'batch', 'expiry', 'qty', 'unit_cost'],
+        required: ['name', 'strength', 'form', 'batch', 'expiry', 'quantity', 'pack_size', 'price'],
         properties: {
           name: { type: 'string' },
           strength: { type: 'string' },
           form: { type: 'string' },
           batch: { type: 'string' },
           expiry: { type: 'string' },
-          qty: nullable('integer'),
-          unit_cost: nullable('number'),
+          quantity: nullable('integer'),
+          pack_size: nullable('integer'),
+          price: nullable('number'),
         },
       },
     },
@@ -156,7 +158,7 @@ export function buildChatRequest(cfg, { system, messages }) {
 
 export function buildScanRequest(cfg, { files, known }) {
   const list = known.length ? known.slice(0, 300).join('\n') : '(none yet)';
-  const text = `Medicines already in this shop:\n${list}\n\nRead the attached ${files.length === 1 ? 'file' : 'files'} and list every medicine line received.`;
+  const text = `Medicines already in this shop (name | strength | form):\n${list}\n\nRead the attached ${files.length === 1 ? 'file' : 'files'} and list every medicine line received.`;
   const isPdf = (f) => f.mediaType === 'application/pdf';
 
   if (cfg.provider === 'anthropic') {
@@ -279,21 +281,32 @@ export async function streamChat(cfg, input, onText, options = {}) {
 
 const str = (v) => (typeof v === 'string' ? v : '');
 
-/** Keeps only well-formed fields from the AI's reading of a delivery. */
+/**
+ * Keeps only well-formed fields from the AI's reading of a delivery, and turns
+ * packs into units here rather than trusting the AI with the arithmetic:
+ * 3 packs of 100 at 8.00 a pack becomes 300 units at 0.08.
+ */
 export function cleanScan(parsed) {
   const items = Array.isArray(parsed?.items) ? parsed.items : [];
+  const count = (v) => (Number.isInteger(v) && v > 0 ? v : null);
   return {
     supplier: clean(str(parsed?.supplier)),
     warnings: (Array.isArray(parsed?.warnings) ? parsed.warnings : []).map((w) => clean(str(w))).filter(Boolean).slice(0, 10),
-    items: items.slice(0, 200).map((it) => ({
-      name: clean(str(it?.name)),
-      strength: clean(str(it?.strength)),
-      form: clean(str(it?.form)),
-      batchNo: clean(str(it?.batch)),
-      expiry: clean(str(it?.expiry)),
-      qty: Number.isInteger(it?.qty) && it.qty > 0 ? it.qty : null,
-      unitCost: Number.isFinite(it?.unit_cost) && it.unit_cost >= 0 ? it.unit_cost : null,
-    })).filter((it) => it.name),
+    items: items.slice(0, 200).map((it) => {
+      const quantity = count(it?.quantity);
+      const packSize = count(it?.pack_size) ?? 1;
+      const price = Number.isFinite(it?.price) && it.price >= 0 ? it.price : null;
+      return {
+        name: clean(str(it?.name)),
+        strength: clean(str(it?.strength)),
+        form: clean(str(it?.form)),
+        batchNo: clean(str(it?.batch)),
+        expiry: clean(str(it?.expiry)),
+        qty: quantity === null ? null : quantity * packSize,
+        unitCost: price === null ? null : Math.round((price / packSize) * 10000) / 10000,
+        packs: packSize > 1 && quantity !== null ? `${quantity} packs of ${packSize}` : '',
+      };
+    }).filter((it) => it.name),
   };
 }
 

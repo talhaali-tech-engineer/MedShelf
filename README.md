@@ -20,7 +20,7 @@ Small pharmacies and clinics lose real money to medicine that expires on the she
 
 ### AI features (optional, with your own key)
 
-- **Scan a delivery.** Photograph the supplier invoice or the packs, or upload a PDF. The AI reads every line: name, strength, form, batch, expiry, quantity and cost. It matches lines to medicines you already stock, flags anything it couldn't read, and **you check every line before anything is saved.**
+- **Scan a delivery.** Photograph the supplier invoice or the packs, or upload a PDF. The AI reads every line exactly as printed: name, strength, form, batch, expiry, quantity, pack size and price. MedShelf then does the arithmetic itself, so "3 packs of 100 at £8.00" becomes 300 units at £0.08. It matches lines to medicines you already stock, so you never get duplicates, and flags anything the AI couldn't read. **You check every line before anything is saved.**
 - **Today's briefing.** A short, ranked plan for the day, written from your actual stock numbers.
 - **Assistant.** Ask about your stock in plain English, for example "Make this week's order list within a budget of 500" or "Which medicines are costing me the most in waste?" Its animated bot scans with its eyes while it thinks, and talks as the answer appears.
 

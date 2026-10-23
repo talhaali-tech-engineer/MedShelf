@@ -120,24 +120,26 @@ test('a rejected key gives a plain message that never repeats the key', async ()
   );
 });
 
-test('scanDelivery turns the AI reply into clean delivery lines', async () => {
+test('scanDelivery turns packs into units and drops bad fields', async () => {
   const reply = {
-    supplier: ' Alpha Pharma ',
-    warnings: ['Line 3 pack size assumed', 42],
+    supplier: ' Northwind Pharma ',
+    warnings: ['Ibuprofen expiry not readable', 42],
     items: [
-      { name: 'Amoxicillin', strength: '500 mg', form: 'Capsule', batch: 'AMX9', expiry: '2027-04', qty: 300, unit_cost: 0.08 },
-      { name: 'Ibuprofen', strength: '', form: 'Tablet', batch: '', expiry: '', qty: -5, unit_cost: 'cheap' },
-      { name: '', strength: '', form: '', batch: '', expiry: '', qty: 1, unit_cost: null },
+      { name: 'Amoxicillin', strength: '500 mg', form: 'Capsule', batch: 'AMX9', expiry: '2027-04', quantity: 3, pack_size: 100, price: 8 },
+      { name: 'Salbutamol inhaler', strength: '100 mcg', form: 'Inhaler', batch: 'S1', expiry: '2027-01', quantity: 6, pack_size: null, price: 1.5 },
+      { name: 'Ibuprofen', strength: '', form: 'Tablet', batch: '', expiry: '', quantity: -5, pack_size: 24, price: 'cheap' },
+      { name: '', strength: '', form: '', batch: '', expiry: '', quantity: 1, pack_size: null, price: null },
     ],
   };
   const { fetchImpl } = fakeFetch(200, { content: [{ type: 'text', text: JSON.stringify(reply) }], stop_reason: 'end_turn' });
   const out = await ai.scanDelivery(CLAUDE, { files: [{ mediaType: 'image/jpeg', base64: 'AAA' }], known: [] }, { fetchImpl });
-  assert.equal(out.supplier, 'Alpha Pharma');
-  assert.deepEqual(out.warnings, ['Line 3 pack size assumed']);
-  assert.equal(out.items.length, 2);
-  assert.deepEqual(out.items[0], { name: 'Amoxicillin', strength: '500 mg', form: 'Capsule', batchNo: 'AMX9', expiry: '2027-04', qty: 300, unitCost: 0.08 });
-  assert.equal(out.items[1].qty, null);
-  assert.equal(out.items[1].unitCost, null);
+  assert.equal(out.supplier, 'Northwind Pharma');
+  assert.deepEqual(out.warnings, ['Ibuprofen expiry not readable']);
+  assert.equal(out.items.length, 3);
+  assert.deepEqual(out.items[0], { name: 'Amoxicillin', strength: '500 mg', form: 'Capsule', batchNo: 'AMX9', expiry: '2027-04', qty: 300, unitCost: 0.08, packs: '3 packs of 100' });
+  assert.deepEqual([out.items[1].qty, out.items[1].unitCost, out.items[1].packs], [6, 1.5, '']);
+  assert.equal(out.items[2].qty, null);
+  assert.equal(out.items[2].unitCost, null);
 });
 
 test('scanDelivery reads OpenAI replies and reports refusals', async () => {

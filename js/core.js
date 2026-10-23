@@ -62,6 +62,27 @@ export function medicineLabel(m) {
   return [m.name, m.strength].filter(Boolean).join(' ') + (m.form ? ` (${m.form})` : '');
 }
 
+const squash = (s) => clean(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * Finds the stocked medicine a scanned line refers to, even when the paperwork
+ * writes it differently: "Amoxicillin 500mg" for Amoxicillin / 500 mg, or
+ * "Capsules" for Capsule. Returns null unless exactly one medicine fits.
+ */
+export function matchMedicine(medicines, { name, strength, form }) {
+  const n = squash(name);
+  const s = squash(strength);
+  const f = squash(form).slice(0, 3);
+  if (!n) return null;
+  const fits = medicines.filter((m) => {
+    const sameName = n === squash(m.name) || n === squash(`${m.name} ${m.strength}`) || n === squash(`${m.name} ${m.strength} ${m.form}`);
+    const sameStrength = !s || !m.strength || s === squash(m.strength);
+    const sameForm = !f || !m.form || f === squash(m.form).slice(0, 3);
+    return sameName && sameStrength && sameForm;
+  });
+  return fits.length === 1 ? fits[0] : null;
+}
+
 const isCount = (v) => Number.isInteger(v) && v >= 0;
 
 function groupBy(items, key) {
@@ -276,6 +297,7 @@ export function expiryOutlook(state, today, months = 12) {
 }
 
 const round = (n, places) => Math.round(n * 10 ** places) / 10 ** places;
+const money2 = (n) => n.toFixed(2);
 
 /**
  * A compact plain-text picture of the stock for the AI assistant. Movement notes
@@ -287,20 +309,22 @@ export function aiStockContext(state, today, settings = DEFAULT_SETTINGS) {
   const batchesBy = groupBy(state.batches.filter((b) => b.qty > 0), 'medicineId');
   const lines = [
     `Today: ${today}. Currency symbol: ${s.currency || '(none set)'}. Expiry warning window: ${s.warnDays} days. Delivery takes ${s.leadDays} days. Orders cover ${s.coverDays} days.`,
-    `Totals: in-date stock worth ${round(totals.stockValue, 2)}. Expired on the shelf: ${totals.expiredUnits} units worth ${round(totals.expiredValue, 2)}. `
-      + `Expiring within ${s.warnDays} days: ${totals.expiringUnits} units worth ${round(totals.expiringValue, 2)}. `
-      + `Likely to expire unsold: ${totals.riskUnits} units worth ${round(totals.riskValue, 2)}. Medicines needing a reorder: ${totals.lowCount}.`,
+    `Totals: in-date stock worth ${money2(totals.stockValue)}. Expired on the shelf: ${totals.expiredUnits} units worth ${money2(totals.expiredValue)}. `
+      + `Expiring within ${s.warnDays} days: ${totals.expiringUnits} units worth ${money2(totals.expiringValue)}. `
+      + `Likely to expire unsold: ${totals.riskUnits} units worth ${money2(totals.riskValue)}. Medicines needing a reorder: ${totals.lowCount}.`,
+    'Write money with two decimal places, for example 1.40.',
     '',
-    'One medicine per line: name | in-date units | sold per day | days of stock left | reorder level | suggested order | likely to expire unsold | batches as number:expiry:units:cost per unit (EXPIRED marks expired batches)',
+    'One medicine per line: name | in-date units | sold per day | days of stock left | reorder level | suggested order | likely to expire unsold (units, value) | expired on the shelf (units, value) | batches as number:expiry:units:cost per unit (EXPIRED marks expired batches)',
   ];
   for (const r of [...rows].sort((a, b) => medicineLabel(a.medicine).localeCompare(medicineLabel(b.medicine)))) {
-    const batches = (batchesBy.get(r.medicine.id) ?? [])
-      .sort((a, b) => a.expiry.localeCompare(b.expiry))
-      .map((b) => `${b.batchNo || '-'}:${b.expiry}:${b.qty}:${round(b.unitCost ?? 0, 2)}${b.expiry < today ? ':EXPIRED' : ''}`)
+    const own = (batchesBy.get(r.medicine.id) ?? []).sort((a, b) => a.expiry.localeCompare(b.expiry));
+    const expiredValue = own.filter((b) => b.expiry < today).reduce((sum, b) => sum + b.qty * (b.unitCost ?? 0), 0);
+    const batches = own
+      .map((b) => `${b.batchNo || '-'}:${b.expiry}:${b.qty}:${round(b.unitCost ?? 0, 4)}${b.expiry < today ? ':EXPIRED' : ''}`)
       .join(', ');
     lines.push([
       medicineLabel(r.medicine), r.onHand, round(r.avgDaily, 1), r.daysLeft === null ? 'n/a' : Math.floor(r.daysLeft),
-      r.medicine.reorderLevel ?? 0, r.orderQty, r.riskUnits, batches || 'none',
+      r.medicine.reorderLevel ?? 0, r.orderQty, `${r.riskUnits}, ${money2(r.riskValue)}`, `${r.expiredUnits}, ${money2(expiredValue)}`, batches || 'none',
     ].join(' | '));
   }
   return lines.join('\n');
