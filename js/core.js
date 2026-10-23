@@ -251,6 +251,61 @@ export function summarize(state, today, settings = DEFAULT_SETTINGS) {
   return { rows, totals, expired: expired.sort(byExpiry), expiring: expiring.sort(byExpiry) };
 }
 
+/** Units and value of stock by the calendar month it expires, for the next `months` months, plus what has already expired. */
+export function expiryOutlook(state, today, months = 12) {
+  let [y, m] = today.split('-').map(Number);
+  const buckets = new Map();
+  for (let i = 0; i < months; i++) {
+    const key = `${y}-${pad(m)}`;
+    buckets.set(key, { month: key, units: 0, value: 0, batches: 0 });
+    if (++m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  const expired = { month: 'expired', units: 0, value: 0, batches: 0 };
+  for (const b of state.batches) {
+    if (b.qty <= 0) continue;
+    const bucket = daysBetween(today, b.expiry) < 0 ? expired : buckets.get(b.expiry.slice(0, 7));
+    if (!bucket) continue;
+    bucket.units += b.qty;
+    bucket.value += b.qty * (b.unitCost ?? 0);
+    bucket.batches += 1;
+  }
+  return { expired, months: [...buckets.values()] };
+}
+
+const round = (n, places) => Math.round(n * 10 ** places) / 10 ** places;
+
+/**
+ * A compact plain-text picture of the stock for the AI assistant. Movement notes
+ * are left out on purpose: they can hold prescription numbers or patient initials.
+ */
+export function aiStockContext(state, today, settings = DEFAULT_SETTINGS) {
+  const s = cleanSettings(settings);
+  const { rows, totals } = summarize(state, today, s);
+  const batchesBy = groupBy(state.batches.filter((b) => b.qty > 0), 'medicineId');
+  const lines = [
+    `Today: ${today}. Currency symbol: ${s.currency || '(none set)'}. Expiry warning window: ${s.warnDays} days. Delivery takes ${s.leadDays} days. Orders cover ${s.coverDays} days.`,
+    `Totals: in-date stock worth ${round(totals.stockValue, 2)}. Expired on the shelf: ${totals.expiredUnits} units worth ${round(totals.expiredValue, 2)}. `
+      + `Expiring within ${s.warnDays} days: ${totals.expiringUnits} units worth ${round(totals.expiringValue, 2)}. `
+      + `Likely to expire unsold: ${totals.riskUnits} units worth ${round(totals.riskValue, 2)}. Medicines needing a reorder: ${totals.lowCount}.`,
+    '',
+    'One medicine per line: name | in-date units | sold per day | days of stock left | reorder level | suggested order | likely to expire unsold | batches as number:expiry:units:cost per unit (EXPIRED marks expired batches)',
+  ];
+  for (const r of [...rows].sort((a, b) => medicineLabel(a.medicine).localeCompare(medicineLabel(b.medicine)))) {
+    const batches = (batchesBy.get(r.medicine.id) ?? [])
+      .sort((a, b) => a.expiry.localeCompare(b.expiry))
+      .map((b) => `${b.batchNo || '-'}:${b.expiry}:${b.qty}:${round(b.unitCost ?? 0, 2)}${b.expiry < today ? ':EXPIRED' : ''}`)
+      .join(', ');
+    lines.push([
+      medicineLabel(r.medicine), r.onHand, round(r.avgDaily, 1), r.daysLeft === null ? 'n/a' : Math.floor(r.daysLeft),
+      r.medicine.reorderLevel ?? 0, r.orderQty, r.riskUnits, batches || 'none',
+    ].join(' | '));
+  }
+  return lines.join('\n');
+}
+
 /* ---------- changes ---------- */
 // Actions return the records to save, as { storeName: [records] }. The app saves
 // them to IndexedDB and then folds them into memory with applyChanges.
@@ -312,7 +367,7 @@ export function receive(state, item, ctx) {
     ? { ...existing, qty: existing.qty + item.qty, unitCost: item.unitCost || existing.unitCost }
     : { id: ctx.newId(), medicineId: med.id, batchNo, expiry: item.expiry, qty: item.qty, unitCost: item.unitCost, receivedAt: ctx.now };
   put.batches.push(batch);
-  put.movements.push({ id: ctx.newId(), medicineId: med.id, batchId: batch.id, type: 'receive', qty: item.qty, date: ctx.today, at: ctx.now, note: '' });
+  put.movements.push({ id: ctx.newId(), medicineId: med.id, batchId: batch.id, type: 'receive', qty: item.qty, date: ctx.today, at: ctx.now, note: clean(item.note) });
   return put;
 }
 

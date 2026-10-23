@@ -3,78 +3,49 @@
 
 import * as core from './core.js';
 import * as db from './db.js';
+import * as ai from './ai.js';
 import { sampleData } from './sample.js';
+import { expiryChart } from './chart.js';
+import { h, icon, fmtDate, fmtMonth, fmtNum, fmtMoney, plural, daysText, toast, download, renderMarkdown } from './ui.js';
 
 const main = document.getElementById('main');
-const toastBox = document.getElementById('toast');
+const nav = document.getElementById('nav');
+const sidebarFoot = document.getElementById('sidebar-foot');
 const channel = 'BroadcastChannel' in window ? new BroadcastChannel('medshelf') : null;
+
 let state = { medicines: [], batches: [], movements: [], settings: { ...core.DEFAULT_SETTINGS } };
+let aiConfig = ai.cleanAiConfig();
 let askedToPersist = false;
 
-/* ---------- helpers ---------- */
+// AI work in progress lives here so it survives moving between screens.
+let briefing = null; // { day, text, busy, error }
+let briefingOut = null;
+const chat = { messages: [], busy: false, controller: null };
+let scan = null; // { status: 'reading' | 'review' | 'error', ... }
+let todoExpanded = false;
 
-function h(tag, attrs, ...children) {
-  const el = document.createElement(tag);
-  for (const c of children.flat(Infinity)) {
-    if (c != null && c !== false) el.append(c instanceof Node ? c : String(c));
-  }
-  for (const [k, v] of Object.entries(attrs ?? {})) {
-    if (v == null || v === false) continue;
-    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (k === 'class') el.className = v;
-    else if (k === 'value') el.value = v;
-    else el.setAttribute(k, v === true ? '' : v);
-  }
-  return el;
-}
+/* ---------- helpers ---------- */
 
 const today = () => core.todayISO();
 const ctx = () => ({ today: today(), now: new Date().toISOString(), newId });
 const findMed = (id) => state.medicines.find((m) => m.id === id);
 const label = (m) => core.medicineLabel(m);
 const byName = (a, b) => label(a).localeCompare(label(b));
+const money = (n) => fmtMoney(n, state.settings.currency);
+const medSub = (m) => [m.strength, m.form].filter(Boolean).join(' · ');
 
 function newId() {
   return crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function fmtDate(iso) {
-  if (!iso) return '—';
-  return new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
-}
-
-const fmtNum = (n) => n.toLocaleString(undefined, { maximumFractionDigits: 1 });
-const money = (n) => state.settings.currency + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const plural = (n, word, many = `${word}s`) => `${fmtNum(n)} ${n === 1 ? word : many}`;
-
-function daysText(days) {
-  if (days < 0) return `expired ${plural(-days, 'day')} ago`;
-  if (days === 0) return 'last day today';
-  return `in ${plural(days, 'day')}`;
-}
-
-function toast(message, kind = 'ok') {
-  const item = h('div', { class: `toast ${kind}` }, message);
-  toastBox.append(item);
-  setTimeout(() => item.remove(), kind === 'bad' ? 6000 : 3500);
 }
 
 async function act(fn) {
   try {
     await fn();
   } catch (err) {
+    if (err?.name === 'AbortError') return;
     console.error(err);
     toast(err.message || 'Something went wrong.', 'bad');
   }
-}
-
-function download(filename, text, type) {
-  const url = URL.createObjectURL(new Blob([text], { type }));
-  const a = h('a', { href: url, download: filename });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function commit(put, options) {
@@ -94,10 +65,39 @@ async function saveSettings(changes) {
   channel?.postMessage('changed');
 }
 
-const field = (text, control, hint) => h('label', { class: 'field' }, h('span', {}, text), control, hint && h('small', { class: 'hint' }, hint));
-const badge = (kind, text) => h('span', { class: `badge ${kind}` }, text);
-const table = (heads, rows) => h('div', { class: 'table-wrap' },
-  h('table', {}, h('thead', {}, h('tr', {}, heads.map((t) => h('th', { scope: 'col' }, t)))), h('tbody', {}, rows)));
+/* ---------- building blocks ---------- */
+
+function btn(text, { icon: iconName, kind = '', size = '', href, onclick, type = 'button', disabled, title } = {}) {
+  const cls = ['btn', kind, size].filter(Boolean).join(' ');
+  const content = [iconName && icon(iconName, size === 'sm' ? 16 : 18), text && h('span', {}, text)];
+  if (href) return h('a', { class: cls, href, title }, content);
+  return h('button', { class: cls, type, onclick, disabled, title, 'aria-label': text ? null : title }, content);
+}
+
+const pageHead = (title, sub, actions = []) => h('header', { class: 'page-head' },
+  h('div', {}, h('h1', {}, title), sub && h('p', { class: 'sub' }, sub)),
+  actions.filter(Boolean).length > 0 && h('div', { class: 'page-actions' }, actions));
+
+const card = (cls, ...children) => h('section', { class: `card ${cls}`.trim() }, ...children);
+
+const cardHead = (title, { sub, iconName, actions = [] } = {}) => h('div', { class: 'card-head' },
+  h('div', { class: 'card-title' }, iconName && h('span', { class: 'card-icon' }, icon(iconName, 18)),
+    h('div', {}, h('h2', {}, title), sub && h('p', { class: 'muted small' }, sub))),
+  actions.filter(Boolean).length > 0 && h('div', { class: 'card-actions' }, actions));
+
+const field = (text, control, hint) => h('label', { class: 'field' }, h('span', { class: 'field-label' }, text), control, hint && h('small', { class: 'hint' }, hint));
+const badge = (tone, text) => h('span', { class: `badge ${tone}` }, text);
+const notice = (tone, iconName, ...content) => h('div', { class: `notice ${tone}` }, icon(iconName, 18), h('div', {}, ...content));
+
+const emptyState = (iconName, title, text, ...actions) => h('div', { class: 'empty' },
+  h('span', { class: 'empty-icon' }, icon(iconName, 24)), h('strong', {}, title), text && h('p', { class: 'muted' }, text),
+  actions.length > 0 && h('div', { class: 'actions center' }, actions));
+
+function table(heads, rows, cls = '') {
+  return h('div', { class: 'table-wrap' }, h('table', { class: `table ${cls}`.trim() },
+    h('thead', {}, h('tr', {}, heads.map((x) => (typeof x === 'string' ? h('th', { scope: 'col' }, x) : h('th', { scope: 'col', class: x.cls }, x.text))))),
+    h('tbody', {}, rows)));
+}
 
 function medicineBadges(row) {
   const out = [];
@@ -109,78 +109,217 @@ function medicineBadges(row) {
   return out.length ? out : [badge('ok', 'OK')];
 }
 
-/* ---------- Today ---------- */
-
-function viewToday() {
-  if (state.medicines.length === 0) return viewWelcome();
-  const { rows, totals, expired, expiring } = core.summarize(state, today(), state.settings);
-  const { warnDays } = state.settings;
-  const low = rows.filter((r) => r.low).sort((a, b) => a.onHand - b.onHand || byName(a.medicine, b.medicine));
-  const risky = rows.filter((r) => r.riskUnits > 0).sort((a, b) => b.riskValue - a.riskValue);
-  const medLink = (m) => h('a', { href: `#/stock/${m.id}` }, label(m));
-
-  const jump = (id) => (e) => {
-    e.preventDefault();
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
-  };
-  const card = (kind, title, big, small, target) => h('a', { class: `card ${kind}`, href: `#${target}`, onclick: jump(target) },
-    h('span', { class: 'card-title' }, title), h('strong', {}, big), h('span', { class: 'card-sub' }, small));
-
-  return h('div', {},
-    h('h1', {}, 'Today'),
-    backupNudge(),
-    h('div', { class: 'cards' },
-      card(totals.expiredUnits ? 'bad' : 'ok', 'Expired on the shelf', plural(totals.expiredUnits, 'unit'), `${money(totals.expiredValue)} · take off the shelf`, 'expired'),
-      card(totals.expiringUnits ? 'warn' : 'ok', `Expiring within ${warnDays} days`, plural(totals.expiringUnits, 'unit'), money(totals.expiringValue), 'expiring'),
-      card(totals.riskUnits ? 'warn' : 'ok', 'Likely to expire unsold', plural(totals.riskUnits, 'unit'), `${money(totals.riskValue)} at your sales rate`, 'risk'),
-      card(totals.lowCount ? 'warn' : 'ok', 'Need reordering', plural(totals.lowCount, 'medicine'), 'low or out of stock', 'reorder')),
-
-    h('section', { id: 'expired' },
-      h('h2', {}, 'Take off the shelf'),
-      expired.length
-        ? [h('p', { class: 'muted' }, 'These batches are past their expiry date. MedShelf will not dispense them. Remove them and write them off.'),
-          table(['Medicine', 'Batch', 'Expired', 'Units', 'Value', ''], expired.map(({ medicine, batch }) => h('tr', {},
-            h('td', {}, medLink(medicine)), h('td', {}, batch.batchNo || '—'), h('td', {}, fmtDate(batch.expiry)),
-            h('td', { class: 'num' }, fmtNum(batch.qty)), h('td', { class: 'num' }, money(batch.qty * (batch.unitCost ?? 0))),
-            h('td', {}, h('button', { class: 'small', onclick: () => openWriteOff(batch) }, 'Write off')))))]
-        : h('p', { class: 'muted' }, 'Nothing expired. Good.')),
-
-    h('section', { id: 'reorder' },
-      h('div', { class: 'section-head' },
-        h('h2', {}, 'Reorder'),
-        low.length > 0 && h('button', { class: 'small', onclick: () => downloadReorder(low) }, 'Download order list (CSV)')),
-      low.length
-        ? table(['Medicine', 'In stock', 'Sells per day', 'Runs out', 'Suggested order'], low.map((r) => h('tr', {},
-          h('td', {}, medLink(r.medicine)), h('td', { class: 'num' }, fmtNum(r.onHand)), h('td', { class: 'num' }, r.avgDaily ? fmtNum(r.avgDaily) : '—'),
-          h('td', {}, r.onHand === 0 ? badge('bad', 'Out now') : r.daysLeft === null ? '—' : `in about ${plural(Math.floor(r.daysLeft), 'day')}`),
-          h('td', { class: 'num' }, r.orderQty ? fmtNum(r.orderQty) : 'Set a reorder level'))))
-        : h('p', { class: 'muted' }, 'Everything is above its reorder level.')),
-
-    h('section', { id: 'risk' },
-      h('h2', {}, 'Likely to expire unsold'),
-      risky.length
-        ? [h('p', { class: 'muted' }, 'At the rate these sold over the last 30 days, some units will expire before they sell. Put them at the front, return them to the supplier, or pass them to a branch that uses more.'),
-          table(['Medicine', 'Batch', 'Expires', 'Units on shelf', 'Will not sell in time'], risky.flatMap((r) => r.risks.map((risk) => h('tr', {},
-            h('td', {}, medLink(r.medicine)), h('td', {}, risk.batchNo || '—'), h('td', {}, fmtDate(risk.expiry)),
-            h('td', { class: 'num' }, fmtNum(risk.qty)), h('td', { class: 'num' }, `about ${fmtNum(risk.atRisk)}`)))))]
-        : h('p', { class: 'muted' }, 'No waste predicted. This needs two weeks of sales history for each medicine.')),
-
-    h('section', { id: 'expiring' },
-      h('h2', {}, `Expiring within ${warnDays} days`),
-      expiring.length
-        ? table(['Medicine', 'Batch', 'Expires', 'Units'], expiring.map(({ medicine, batch, daysLeft }) => h('tr', {},
-          h('td', {}, medLink(medicine)), h('td', {}, batch.batchNo || '—'),
-          h('td', {}, `${fmtDate(batch.expiry)} (${daysText(daysLeft)})`), h('td', { class: 'num' }, fmtNum(batch.qty)))))
-        : h('p', { class: 'muted' }, 'Nothing expires soon.')));
+function connectCard(text) {
+  return card('connect-card',
+    h('span', { class: 'connect-icon' }, icon('assistant', 26)),
+    h('h2', {}, 'Connect AI'),
+    h('p', { class: 'muted' }, text),
+    btn('Connect a key', { icon: 'key', kind: 'primary', href: '#/data?section=ai' }));
 }
 
-function backupNudge() {
-  const last = state.settings.lastBackup;
-  const days = last ? core.daysBetween(last.slice(0, 10), today()) : null;
-  if (days !== null && days < 7) return null;
-  return h('div', { class: 'notice' },
-    h('span', {}, last ? `Your last backup was ${plural(days, 'day')} ago. ` : 'Your stock is saved only in this browser on this device. '),
-    h('a', { href: '#/data' }, 'Download a backup'));
+/* ---------- navigation chrome ---------- */
+
+const NAV = [
+  { view: 'dashboard', text: 'Today', icon: 'today' },
+  { view: 'stock', text: 'Stock', icon: 'stock' },
+  { view: 'receive', text: 'Receive', icon: 'receive' },
+  { view: 'dispense', text: 'Dispense', icon: 'dispense' },
+  { view: 'assistant', text: 'Assistant', icon: 'assistant' },
+  { view: 'data', text: 'Data', icon: 'data' },
+];
+
+function renderChrome(active) {
+  nav.replaceChildren(...NAV.map((n) => h('a', { href: `#/${n.view}`, class: 'nav-item', 'aria-current': n.view === active ? 'page' : null },
+    icon(n.icon, 22), h('span', {}, n.text))));
+  sidebarFoot.replaceChildren(...[
+    h('div', { class: 'foot-item' }, icon('shield', 16), h('span', {}, 'Stock stays on this device')),
+    h('a', { class: `foot-item${aiConfig.provider ? ' on' : ''}`, href: '#/data?section=ai' }, icon('assistant', 16),
+      h('span', {}, aiConfig.provider ? `AI on · ${aiConfig.model}` : 'AI off · connect a key')),
+    !navigator.onLine && h('div', { class: 'foot-item' }, icon('wifiOff', 16), h('span', {}, 'Offline · AI paused')),
+  ].filter(Boolean));
+}
+
+/* ---------- Today ---------- */
+
+function greeting() {
+  const hour = new Date().getHours();
+  return hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+}
+
+function viewToday() {
+  if (!state.medicines.length) return viewWelcome();
+  const t = today();
+  const s = core.summarize(state, t, state.settings);
+  const { totals } = s;
+  const kpi = (iconName, tone, title, big, sub, href) => h('a', { class: `kpi ${tone}`, href },
+    h('span', { class: 'kpi-icon' }, icon(iconName, 20)),
+    h('span', { class: 'kpi-title' }, title),
+    h('strong', { class: 'kpi-value' }, big),
+    h('span', { class: 'kpi-sub' }, sub));
+
+  return h('div', { class: 'page' },
+    pageHead(greeting(), `${fmtDate(t, { weekday: true })} · ${plural(state.medicines.length, 'medicine')} · ${money(totals.stockValue)} of in-date stock`),
+    backupNudge(),
+    h('div', { class: 'kpis' },
+      kpi('alert', totals.expiredUnits ? 'bad' : 'ok', 'Expired on the shelf', plural(totals.expiredUnits, 'unit'),
+        totals.expiredUnits ? `${money(totals.expiredValue)} to write off` : 'Nothing to remove', '#/stock?filter=expired'),
+      kpi('clock', totals.expiringUnits ? 'warn' : 'ok', `Expiring in ${state.settings.warnDays} days`, plural(totals.expiringUnits, 'unit'),
+        `${money(totals.expiringValue)} to sell first`, '#/stock?filter=expiring'),
+      kpi('waste', totals.riskUnits ? 'warn' : 'ok', 'Likely to expire unsold', plural(totals.riskUnits, 'unit'),
+        `${money(totals.riskValue)} at risk`, '#/stock?filter=risk'),
+      kpi('cart', totals.lowCount ? 'info' : 'ok', 'Need reordering', plural(totals.lowCount, 'medicine'), 'low or out of stock', '#/stock?filter=low')),
+    h('div', { class: 'grid-2' },
+      todoCard(s),
+      h('div', { class: 'stack' }, briefingCard(), outlookCard(t))),
+    reorderCard(s));
+}
+
+function todoItems(s) {
+  const items = [];
+  const view = (m) => btn('View', { href: `#/stock/${m.id}`, size: 'sm', kind: 'ghost' });
+  for (const { medicine, batch } of s.expired) {
+    items.push({
+      tone: 'bad', icon: 'alert', title: `Remove ${fmtNum(batch.qty)} × ${label(medicine)}`,
+      detail: `Batch ${batch.batchNo || '(no number)'} expired ${fmtDate(batch.expiry)} · worth ${money(batch.qty * (batch.unitCost ?? 0))}`,
+      action: btn('Write off', { size: 'sm', onclick: () => openWriteOff(batch) }),
+    });
+  }
+  const low = s.rows.filter((r) => r.low).sort((a, b) => a.onHand - b.onHand || (a.daysLeft ?? Infinity) - (b.daysLeft ?? Infinity));
+  for (const r of low) {
+    const out = r.onHand === 0;
+    items.push({
+      tone: out ? 'bad' : 'warn', icon: 'cart', title: out ? `${label(r.medicine)} is out of stock` : `Reorder ${label(r.medicine)}`,
+      detail: [
+        !out && `${fmtNum(r.onHand)} left`,
+        !out && r.daysLeft !== null && `about ${plural(Math.floor(r.daysLeft), 'day')} of stock`,
+        r.orderQty ? `suggested order ${fmtNum(r.orderQty)}` : 'set a reorder level to get a suggested order',
+      ].filter(Boolean).join(' · '),
+      action: view(r.medicine),
+    });
+  }
+  const riskBatches = new Set();
+  const risky = s.rows.flatMap((r) => r.risks.map((risk) => ({ r, risk })))
+    .sort((a, b) => b.risk.atRisk * b.risk.unitCost - a.risk.atRisk * a.risk.unitCost);
+  for (const { r, risk } of risky) {
+    riskBatches.add(risk.batchId);
+    items.push({
+      tone: 'warn', icon: 'waste', title: `About ${fmtNum(risk.atRisk)} × ${label(r.medicine)} won't sell in time`,
+      detail: `Batch ${risk.batchNo || '(no number)'} expires ${fmtDate(risk.expiry)}. Put it at the front, return it, or send it to a branch that uses more.`,
+      action: view(r.medicine),
+    });
+  }
+  for (const { medicine, batch, daysLeft } of s.expiring) {
+    if (daysLeft > 30 || riskBatches.has(batch.id)) continue;
+    items.push({
+      tone: 'info', icon: 'clock', title: `Sell first: ${label(medicine)}`,
+      detail: `Batch ${batch.batchNo || '(no number)'} expires ${daysText(daysLeft)} · ${plural(batch.qty, 'unit')} left`,
+      action: view(medicine),
+    });
+  }
+  return items;
+}
+
+function todoCard(s) {
+  const items = todoItems(s);
+  const shown = todoExpanded ? items : items.slice(0, 6);
+  return card('todo-card',
+    cardHead('To do', { sub: items.length ? `${plural(items.length, 'thing')} ${items.length === 1 ? 'needs' : 'need'} attention` : 'Nothing needs attention' }),
+    items.length
+      ? h('ul', { class: 'todo' }, shown.map((it) => h('li', { class: `todo-item ${it.tone}` },
+        h('span', { class: 'todo-icon' }, icon(it.icon, 18)),
+        h('div', { class: 'todo-text' }, h('strong', {}, it.title), h('span', {}, it.detail)),
+        it.action)))
+      : emptyState('check', 'All clear', 'Nothing has expired, nothing is low, and no waste is predicted.'),
+    items.length > 6 && h('div', { class: 'card-foot' }, btn(todoExpanded ? 'Show fewer' : `Show all ${items.length}`, {
+      kind: 'ghost', size: 'sm', onclick: () => { todoExpanded = !todoExpanded; render(); },
+    })));
+}
+
+function briefingCard() {
+  if (!aiConfig.provider) {
+    return card('ai-card',
+      cardHead('AI briefing', { iconName: 'assistant' }),
+      h('p', { class: 'muted' }, 'Connect your OpenAI or Claude key to get a plain-English plan for the day, scan invoices with your camera, and ask questions about your stock.'),
+      btn('Connect AI', { icon: 'key', kind: 'primary', size: 'sm', href: '#/data?section=ai' }));
+  }
+  if (briefing && briefing.day !== today()) briefing = null;
+  const out = h('div', { class: 'ai-output' });
+  briefingOut = out;
+  paintBriefing(out);
+  const busy = briefing?.busy;
+  return card('ai-card',
+    cardHead('AI briefing', {
+      iconName: 'assistant',
+      sub: `${ai.PROVIDERS[aiConfig.provider].name} · ${aiConfig.model}`,
+      actions: [btn(briefing?.text ? 'Refresh' : "Write today's plan", {
+        icon: briefing?.text ? 'refresh' : 'assistant', kind: briefing?.text ? 'ghost' : 'primary', size: 'sm', disabled: busy,
+        onclick: () => act(runBriefing),
+      })],
+    }),
+    out,
+    briefing?.text && !busy && h('div', { class: 'card-foot' }, btn('Ask a follow-up', { icon: 'next', kind: 'ghost', size: 'sm', onclick: continueBriefing })));
+}
+
+function paintBriefing(out = briefingOut) {
+  if (!out) return;
+  if (briefing?.error) out.replaceChildren(notice('bad', 'alert', briefing.error));
+  else if (briefing?.text) out.replaceChildren(renderMarkdown(briefing.text));
+  else if (briefing?.busy) out.replaceChildren(h('div', { class: 'thinking' }, h('span', { class: 'spinner sm' }), 'Reading your stock…'));
+  else out.replaceChildren(h('p', { class: 'muted' }, 'Get the most important things to do today, worked out from your stock.'));
+}
+
+async function runBriefing() {
+  briefing = { day: today(), text: '', busy: true };
+  render();
+  const current = briefing;
+  try {
+    await ai.streamChat(aiConfig, {
+      system: ai.assistantSystem(core.aiStockContext(state, today(), state.settings)),
+      messages: [{ role: 'user', content: ai.BRIEFING_PROMPT }],
+    }, (text) => {
+      current.text = text;
+      if (briefingOut?.isConnected) paintBriefing();
+    });
+  } catch (err) {
+    current.error = err.message;
+  } finally {
+    current.busy = false;
+    if (currentRoute().name === 'dashboard') render();
+  }
+}
+
+function continueBriefing() {
+  chat.messages = [
+    { role: 'user', content: ai.BRIEFING_PROMPT, display: "Today's briefing" },
+    { role: 'assistant', content: briefing.text },
+  ];
+  location.hash = '#/assistant';
+}
+
+function outlookCard(t) {
+  const outlook = core.expiryOutlook(state, t, 12);
+  const useValue = state.batches.some((b) => b.qty > 0 && (b.unitCost ?? 0) > 0);
+  const range = `${fmtMonth(outlook.months[0].month, 'long')} to ${fmtMonth(outlook.months.at(-1).month, 'long')}`;
+  return card('',
+    cardHead('Expiry outlook', { sub: `${useValue ? 'Value of stock' : 'Units'} by the month it expires, ${range}` }),
+    expiryChart(outlook, { money, currency: state.settings.currency, useValue }));
+}
+
+function reorderCard(s) {
+  const low = s.rows.filter((r) => r.low).sort((a, b) => a.onHand - b.onHand);
+  if (!low.length) return null;
+  return card('',
+    cardHead('Order list', {
+      sub: 'Enough to cover the delivery wait plus your order period, based on the last 30 days of sales',
+      actions: [btn('Download CSV', { icon: 'download', size: 'sm', onclick: () => downloadReorder(low) })],
+    }),
+    table(['Medicine', { text: 'In stock', cls: 'num' }, { text: 'Sells per day', cls: 'num hide-sm' }, 'Runs out', { text: 'Order', cls: 'num' }],
+      low.map((r) => h('tr', {},
+        h('td', {}, h('a', { href: `#/stock/${r.medicine.id}`, class: 'med-name' }, r.medicine.name), h('span', { class: 'med-sub' }, medSub(r.medicine))),
+        h('td', { class: 'num' }, fmtNum(r.onHand)),
+        h('td', { class: 'num hide-sm' }, r.avgDaily ? fmtNum(r.avgDaily) : '—'),
+        h('td', {}, r.onHand === 0 ? badge('bad', 'Out now') : r.daysLeft === null ? '—' : `in ~${plural(Math.floor(r.daysLeft), 'day')}`),
+        h('td', { class: 'num' }, r.orderQty ? h('strong', {}, fmtNum(r.orderQty)) : h('span', { class: 'muted small' }, 'Set a reorder level'))))));
 }
 
 function downloadReorder(rows) {
@@ -189,107 +328,176 @@ function downloadReorder(rows) {
   download(`medshelf-order-${today()}.csv`, core.toCSV(lines), 'text/csv');
 }
 
+function backupNudge() {
+  const last = state.settings.lastBackup;
+  const days = last ? core.daysBetween(last.slice(0, 10), today()) : null;
+  if (days !== null && days < 7) return null;
+  return notice('warn', 'shield',
+    h('span', {}, last ? `Your last backup was ${plural(days, 'day')} ago. ` : 'Your stock is saved only in this browser on this device. '),
+    h('a', { href: '#/data?section=backup' }, 'Download a backup'));
+}
+
 function viewWelcome() {
-  return h('div', { class: 'welcome' },
-    h('h1', {}, 'Stop losing money to expired medicine'),
-    h('p', {}, 'MedShelf tracks every batch you receive and its expiry date. It tells you what to take off the shelf, what will expire before it sells, and what to reorder. It sells the earliest-expiring stock first.'),
-    h('p', { class: 'muted' }, 'It works without internet, and your stock stays in this browser on this device. Nothing is sent anywhere.'),
-    h('div', { class: 'actions' },
-      h('a', { class: 'button primary', href: '#/receive' }, 'Add your first delivery'),
-      h('a', { class: 'button', href: '#/data' }, 'Import a spreadsheet'),
-      h('button', { onclick: () => act(loadSample) }, 'Try it with sample data')));
+  const feature = (iconName, title, text) => h('div', { class: 'feature' },
+    h('span', { class: 'feature-icon' }, icon(iconName, 22)), h('strong', {}, title), h('p', {}, text));
+  return h('div', { class: 'page welcome' },
+    h('div', { class: 'hero' },
+      h('span', { class: 'eyebrow' }, icon('shield', 16), 'Free · works offline · your data stays on this device'),
+      h('h1', {}, 'Stop losing money to expired medicine'),
+      h('p', { class: 'lead' }, 'MedShelf tracks every batch and its expiry date, sells the oldest stock first, warns you before medicine expires or runs out, and tells you exactly what to order.'),
+      h('div', { class: 'actions' },
+        btn('Add your first delivery', { icon: 'plus', kind: 'primary', href: '#/receive' }),
+        btn('Try it with sample data', { icon: 'next', onclick: () => act(loadSample) }),
+        btn('Import a spreadsheet', { kind: 'ghost', href: '#/data?section=import' }))),
+    h('div', { class: 'features' },
+      feature('alert', 'Catch expired stock', 'See what to take off the shelf today, and what it cost you.'),
+      feature('waste', 'Predict waste', 'Find batches that will expire before they sell, while there is still time to act.'),
+      feature('cart', 'Order the right amount', 'Reorder suggestions from your real sales, ready to send to your supplier.'),
+      feature('assistant', 'AI built in', 'Scan invoices with your camera and ask questions about your stock, using your own OpenAI or Claude key.')));
 }
 
 async function loadSample() {
-  const data = sampleData(today(), newId);
-  await commit(data);
-  toast('Sample data loaded. Erase it from the Data page when you are done.');
+  await commit(sampleData(today(), newId));
+  toast('Sample data loaded. You can erase it on the Data page.');
   render();
 }
 
 /* ---------- Stock ---------- */
 
-function viewStock(id) {
+const FILTERS = [
+  ['all', 'All', () => true],
+  ['low', 'Low or out', (r) => r.low],
+  ['expiring', 'Expiring', (r) => r.expiringUnits > 0],
+  ['expired', 'Expired', (r) => r.expiredUnits > 0],
+  ['risk', 'Waste risk', (r) => r.riskUnits > 0],
+];
+
+function viewStock(id, params) {
   if (id) return viewMedicine(id);
-  const { rows } = core.summarize(state, today(), state.settings);
+  const t = today();
+  const { rows } = core.summarize(state, t, state.settings);
   rows.sort((a, b) => byName(a.medicine, b.medicine));
+  let filter = FILTERS.some(([k]) => k === params.get('filter')) ? params.get('filter') : 'all';
+  let query = '';
+  const coverTarget = state.settings.leadDays + state.settings.coverDays;
   const tbody = h('tbody');
-  const fill = (q) => {
-    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-    const shown = rows.filter((r) => words.every((w) => label(r.medicine).toLowerCase().includes(w)));
-    tbody.replaceChildren(...shown.map((r) => h('tr', {},
-      h('td', {}, h('a', { href: `#/stock/${r.medicine.id}` }, label(r.medicine))),
-      h('td', { class: 'num' }, fmtNum(r.onHand)),
-      h('td', {}, fmtDate(r.nextExpiry)),
-      h('td', { class: 'num' }, r.daysLeft === null ? '—' : fmtNum(Math.floor(r.daysLeft))),
-      h('td', {}, medicineBadges(r)))));
-    if (!shown.length) tbody.append(h('tr', {}, h('td', { colspan: 5, class: 'muted' }, rows.length ? 'No medicine matches.' : 'No stock yet.')));
+  const chips = h('div', { class: 'chips', role: 'group', 'aria-label': 'Show' });
+
+  const paint = () => {
+    const test = FILTERS.find(([k]) => k === filter)[2];
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const shown = rows.filter((r) => test(r) && words.every((w) => label(r.medicine).toLowerCase().includes(w)));
+    chips.replaceChildren(...FILTERS.map(([k, text, fn]) => h('button', {
+      type: 'button', class: 'chip', 'aria-pressed': String(k === filter),
+      onclick: () => {
+        filter = k;
+        history.replaceState(null, '', k === 'all' ? '#/stock' : `#/stock?filter=${k}`);
+        paint();
+      },
+    }, text, h('span', { class: 'chip-count' }, rows.filter(fn).length))));
+    tbody.replaceChildren(...shown.map((r) => stockRow(r, t, coverTarget)));
+    if (!shown.length) tbody.append(h('tr', {}, h('td', { colspan: 5, class: 'empty-row' }, rows.length ? 'No medicine matches.' : 'No stock yet.')));
   };
-  fill('');
-  return h('div', {},
-    h('div', { class: 'section-head' }, h('h1', {}, 'Stock'), h('a', { class: 'button primary', href: '#/receive' }, 'Receive stock')),
-    h('input', { type: 'search', class: 'search', placeholder: 'Search medicines', 'aria-label': 'Search medicines', oninput: (e) => fill(e.target.value) }),
-    h('div', { class: 'table-wrap' }, h('table', {},
-      h('thead', {}, h('tr', {}, ['Medicine', 'In stock', 'Next expiry', 'Days of stock', 'Status'].map((t) => h('th', { scope: 'col' }, t)))),
-      tbody)));
+  paint();
+
+  return h('div', { class: 'page' },
+    pageHead('Stock', `${plural(rows.length, 'medicine')} · ${plural(state.batches.filter((b) => b.qty > 0).length, 'batch', 'batches')} on the shelf`,
+      [btn('Receive stock', { icon: 'plus', kind: 'primary', href: '#/receive' })]),
+    card('table-card',
+      h('div', { class: 'toolbar' },
+        h('label', { class: 'search' }, icon('search', 18),
+          h('input', { type: 'search', placeholder: 'Search medicines', 'aria-label': 'Search medicines', oninput: (e) => { query = e.target.value; paint(); } })),
+        chips),
+      h('div', { class: 'table-wrap' }, h('table', { class: 'table clickable' },
+        h('thead', {}, h('tr', {},
+          h('th', { scope: 'col' }, 'Medicine'), h('th', { scope: 'col' }, 'In stock'), h('th', { scope: 'col', class: 'hide-sm' }, 'Next expiry'),
+          h('th', { scope: 'col', class: 'num hide-sm' }, 'Days of stock'), h('th', { scope: 'col' }, 'Status'))),
+        tbody))));
+}
+
+function stockRow(r, t, coverTarget) {
+  const cover = h('span', { class: `cover${r.low ? ' low' : ''}` }, h('span', {}));
+  cover.firstChild.style.width = `${r.daysLeft === null ? (r.onHand ? 100 : 0) : Math.min(100, (r.daysLeft / coverTarget) * 100)}%`;
+  return h('tr', { onclick: (e) => { if (!e.target.closest('a')) location.hash = `#/stock/${r.medicine.id}`; } },
+    h('td', {}, h('a', { href: `#/stock/${r.medicine.id}`, class: 'med-name' }, r.medicine.name), h('span', { class: 'med-sub' }, medSub(r.medicine))),
+    h('td', {}, h('div', { class: 'qty-cell' }, h('strong', {}, fmtNum(r.onHand)), cover)),
+    h('td', { class: 'hide-sm' }, r.nextExpiry ? [fmtDate(r.nextExpiry), h('span', { class: 'med-sub' }, daysText(core.daysBetween(t, r.nextExpiry)))] : '—'),
+    h('td', { class: 'num hide-sm' }, r.daysLeft === null ? '—' : fmtNum(Math.floor(r.daysLeft))),
+    h('td', {}, h('div', { class: 'badges' }, medicineBadges(r))));
 }
 
 function viewMedicine(id) {
   const med = findMed(id);
-  if (!med) return h('div', {}, h('h1', {}, 'Not found'), h('p', {}, h('a', { href: '#/stock' }, 'Back to stock')));
+  if (!med) {
+    return h('div', { class: 'page' }, pageHead('Not found', 'This medicine is not in your stock.'), btn('Back to stock', { icon: 'back', href: '#/stock' }));
+  }
   const t = today();
   const row = core.summarize({ ...state, medicines: [med] }, t, state.settings).rows[0];
   const batches = state.batches.filter((b) => b.medicineId === id && b.qty > 0).sort((a, b) => a.expiry.localeCompare(b.expiry));
   const history = state.movements.filter((m) => m.medicineId === id).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 100);
   const batchNo = (bid) => state.batches.find((b) => b.id === bid)?.batchNo || '—';
-  const kinds = { receive: 'Received', dispense: 'Dispensed', writeoff: 'Written off' };
-  const stat = (name, value) => h('div', { class: 'stat' }, h('span', {}, name), h('strong', {}, value));
+  const kinds = { receive: ['Received', 'ok'], dispense: ['Dispensed', 'info'], writeoff: ['Written off', 'bad'] };
+  const value = batches.filter((b) => b.expiry >= t).reduce((sum, b) => sum + b.qty * (b.unitCost ?? 0), 0);
+  const stat = (name, big, small) => h('div', { class: 'stat' }, h('span', {}, name), h('strong', {}, big), small && h('small', {}, small));
 
-  const levelForm = h('form', { class: 'inline', onsubmit: (e) => {
-    e.preventDefault();
-    act(async () => {
-      const level = Number(e.target.level.value);
-      if (!Number.isInteger(level) || level < 0) throw new RangeError('Reorder level must be a whole number, zero or more.');
-      await commit({ medicines: [{ ...med, reorderLevel: level }] });
-      toast('Reorder level saved.');
-      render();
-    });
-  } },
-  field('Reorder level', h('input', { name: 'level', type: 'number', min: 0, step: 1, inputmode: 'numeric', value: med.reorderLevel ?? 0 })),
-  h('button', {}, 'Save'));
+  const levelForm = h('form', {
+    class: 'inline-form',
+    onsubmit: (e) => {
+      e.preventDefault();
+      act(async () => {
+        const level = Number(e.target.elements.level.value);
+        if (!Number.isInteger(level) || level < 0) throw new RangeError('Reorder level must be a whole number, zero or more.');
+        await commit({ medicines: [{ ...med, reorderLevel: level }] });
+        toast('Reorder level saved.');
+        render();
+      });
+    },
+  }, field('Units', h('input', { name: 'level', type: 'number', min: 0, step: 1, inputmode: 'numeric', value: med.reorderLevel ?? 0 })),
+  btn('Save', { type: 'submit' }));
 
-  return h('div', {},
-    h('p', {}, h('a', { href: '#/stock' }, '← All stock')),
-    h('div', { class: 'section-head' }, h('h1', {}, label(med)), h('div', { class: 'badges' }, medicineBadges(row))),
+  return h('div', { class: 'page' },
+    h('a', { class: 'back-link', href: '#/stock' }, icon('back', 16), 'All stock'),
+    pageHead(med.name, medSub(med) || null, [
+      btn('Dispense', { icon: 'dispense', kind: 'primary', href: `#/dispense/${id}` }),
+      btn('Receive more', { icon: 'receive', href: `#/receive/${id}` }),
+    ]),
+    h('div', { class: 'badges spaced' }, medicineBadges(row)),
     h('div', { class: 'stats' },
-      stat('In stock (in date)', fmtNum(row.onHand)),
-      stat('Sells per day', row.avgDaily ? fmtNum(row.avgDaily) : '—'),
-      stat('Runs out', row.daysLeft === null ? '—' : `in about ${plural(Math.floor(row.daysLeft), 'day')}`),
-      stat('Suggested order', row.orderQty ? fmtNum(row.orderQty) : '—')),
-    h('div', { class: 'actions' },
-      h('a', { class: 'button primary', href: `#/dispense/${id}` }, 'Dispense'),
-      h('a', { class: 'button', href: `#/receive/${id}` }, 'Receive more')),
-    levelForm,
-    h('h2', {}, 'Batches on the shelf'),
-    batches.length
-      ? table(['Batch', 'Expiry', 'Units', 'Cost per unit', 'Status', ''], batches.map((b) => {
-        const status = core.expiryStatus(b.expiry, t, state.settings.warnDays);
-        const days = core.daysBetween(t, b.expiry);
-        return h('tr', {},
-          h('td', {}, b.batchNo || '—'),
-          h('td', {}, `${fmtDate(b.expiry)} (${daysText(days)})`),
-          h('td', { class: 'num' }, fmtNum(b.qty)),
-          h('td', { class: 'num' }, money(b.unitCost ?? 0)),
-          h('td', {}, badge(status === 'expired' ? 'bad' : status === 'expiring' ? 'warn' : 'ok', status === 'expired' ? 'Expired' : status === 'expiring' ? 'Expiring' : 'OK')),
-          h('td', {}, h('button', { class: 'small', onclick: () => openWriteOff(b) }, 'Write off')));
-      }))
-      : h('p', { class: 'muted' }, 'No units on the shelf.'),
-    h('h2', {}, 'History'),
-    history.length
-      ? table(['Date', 'What happened', 'Batch', 'Units', 'Note'], history.map((m) => h('tr', {},
-        h('td', {}, fmtDate(m.date)), h('td', {}, kinds[m.type]), h('td', {}, batchNo(m.batchId)),
-        h('td', { class: 'num' }, fmtNum(m.qty)), h('td', {}, m.note || ''))))
-      : h('p', { class: 'muted' }, 'Nothing yet.'));
+      stat('In stock', fmtNum(row.onHand), 'in-date units'),
+      stat('Sells per day', row.avgDaily ? fmtNum(row.avgDaily) : '—', 'last 30 days'),
+      stat('Runs out', row.daysLeft === null ? '—' : `~${plural(Math.floor(row.daysLeft), 'day')}`),
+      stat('Suggested order', row.orderQty ? fmtNum(row.orderQty) : '—'),
+      stat('Stock value', money(value))),
+    h('div', { class: 'grid-2 wide-left' },
+      card('',
+        cardHead('Batches on the shelf', { sub: 'Earliest expiry first. Expired batches are never dispensed.' }),
+        batches.length
+          ? table(['Batch', 'Expiry', { text: 'Units', cls: 'num' }, { text: 'Cost', cls: 'num hide-sm' }, 'Status', ''], batches.map((b) => {
+            const status = core.expiryStatus(b.expiry, t, state.settings.warnDays);
+            const [text, tone] = { expired: ['Expired', 'bad'], expiring: ['Expiring', 'warn'], ok: ['OK', 'ok'] }[status];
+            return h('tr', {},
+              h('td', {}, h('strong', {}, b.batchNo || '—')),
+              h('td', {}, fmtDate(b.expiry), h('span', { class: 'med-sub' }, daysText(core.daysBetween(t, b.expiry)))),
+              h('td', { class: 'num' }, fmtNum(b.qty)),
+              h('td', { class: 'num hide-sm' }, money(b.unitCost ?? 0)),
+              h('td', {}, badge(tone, text)),
+              h('td', { class: 'num' }, btn('Write off', { size: 'sm', kind: 'ghost', onclick: () => openWriteOff(b) })));
+          }))
+          : emptyState('stock', 'Nothing on the shelf', 'Receive a delivery to add a batch.')),
+      card('',
+        cardHead('Reorder level'),
+        h('p', { class: 'muted small' }, 'MedShelf flags this medicine when in-date stock falls to this many units.'),
+        levelForm)),
+    card('',
+      cardHead('History', { sub: history.length === 100 ? 'Latest 100 movements' : null }),
+      history.length
+        ? table(['Date', 'What happened', 'Batch', { text: 'Units', cls: 'num' }, { text: 'Note', cls: 'hide-sm' }], history.map((m) => h('tr', {},
+          h('td', {}, fmtDate(m.date)),
+          h('td', {}, badge(kinds[m.type][1], kinds[m.type][0])),
+          h('td', {}, batchNo(m.batchId)),
+          h('td', { class: 'num' }, fmtNum(m.qty)),
+          h('td', { class: 'hide-sm muted' }, m.note || ''))))
+        : h('p', { class: 'muted' }, 'Nothing yet.')));
 }
 
 function openWriteOff(batch) {
@@ -297,23 +505,25 @@ function openWriteOff(batch) {
   const expired = core.expiryStatus(batch.expiry, today(), state.settings.warnDays) === 'expired';
   const reasons = ['Expired', 'Damaged', 'Recalled', 'Returned to supplier', 'Stock count correction'];
   const dialog = h('dialog', { class: 'dialog' });
-  const form = h('form', { onsubmit: (e) => {
-    e.preventDefault();
-    act(async () => {
-      const put = core.writeOff(state, batch.id, Number(form.qty.value), form.reason.value, ctx());
-      await commit(put);
-      dialog.close();
-      toast(`Wrote off ${form.qty.value} of ${label(med)}.`);
-      render();
-    });
-  } },
-  h('h2', {}, 'Write off stock'),
-  h('p', {}, `${label(med)}, batch ${batch.batchNo || '(no number)'}, expiry ${fmtDate(batch.expiry)}. ${plural(batch.qty, 'unit')} on the shelf.`),
+  const form = h('form', {
+    onsubmit: (e) => {
+      e.preventDefault();
+      act(async () => {
+        const qty = Number(form.elements.qty.value);
+        await commit(core.writeOff(state, batch.id, qty, form.elements.reason.value, ctx()));
+        dialog.close();
+        toast(`Wrote off ${fmtNum(qty)} × ${label(med)}.`);
+        render();
+      });
+    },
+  },
+  h('div', { class: 'dialog-head' }, h('span', { class: 'todo-icon bad' }, icon('trash', 18)), h('h2', {}, 'Write off stock')),
+  h('p', { class: 'muted' }, `${label(med)}, batch ${batch.batchNo || '(no number)'}, expiry ${fmtDate(batch.expiry)}. ${plural(batch.qty, 'unit')} on the shelf.`),
   field('Units to remove', h('input', { name: 'qty', type: 'number', min: 1, max: batch.qty, step: 1, inputmode: 'numeric', required: true, value: batch.qty })),
   field('Reason', h('select', { name: 'reason', value: expired ? 'Expired' : 'Damaged' }, reasons.map((r) => h('option', {}, r)))),
-  h('div', { class: 'actions' },
-    h('button', { type: 'button', onclick: () => dialog.close() }, 'Cancel'),
-    h('button', { class: 'danger' }, 'Write off')));
+  h('div', { class: 'actions end' },
+    btn('Cancel', { kind: 'ghost', onclick: () => dialog.close() }),
+    btn('Write off', { kind: 'danger', type: 'submit', icon: 'trash' })));
   dialog.append(form);
   dialog.addEventListener('close', () => dialog.remove());
   document.body.append(dialog);
@@ -325,20 +535,175 @@ function openWriteOff(batch) {
 const FORMS = ['Tablet', 'Capsule', 'Syrup', 'Suspension', 'Injection', 'Inhaler', 'Cream', 'Ointment', 'Drops', 'Sachet', 'Pen', 'Suppository'];
 
 function viewReceive(prefillId) {
+  return h('div', { class: 'page' },
+    pageHead('Receive stock', aiConfig.provider ? 'Scan the paperwork with AI, or enter each batch by hand.' : 'Enter each batch from the delivery.'),
+    scanCard(),
+    card('',
+      cardHead(aiConfig.provider ? 'Or enter a batch by hand' : 'Add a batch', { sub: 'One line per batch number and expiry date.' }),
+      receiveForm(prefillId)));
+}
+
+function scanCard() {
+  if (!aiConfig.provider) {
+    return card('scan-card locked',
+      h('div', { class: 'scan-intro' },
+        h('span', { class: 'scan-icon' }, icon('camera', 24)),
+        h('div', {},
+          h('h2', {}, 'Scan a delivery with AI'),
+          h('p', { class: 'muted' }, 'Photograph the invoice or the packs, and MedShelf fills in every line for you to check. Connect an OpenAI or Claude key to turn this on.'))),
+      btn('Connect AI', { icon: 'key', href: '#/data?section=ai' }));
+  }
+  if (scan?.status === 'reading') {
+    return card('scan-card',
+      h('div', { class: 'scan-reading' },
+        h('span', { class: 'spinner' }),
+        h('div', {}, h('strong', {}, `Reading ${plural(scan.files.length, 'file')}…`), h('span', { class: 'muted small' }, 'This usually takes 10 to 40 seconds.'))),
+      scan.previews.length > 0 && h('div', { class: 'thumbs' }, scan.previews.map((src) => h('img', { src, alt: 'Scanned page' }))),
+      btn('Cancel', { kind: 'ghost', size: 'sm', onclick: () => scan.controller.abort() }));
+  }
+  if (scan?.status === 'review') return reviewCard();
+
+  const start = (input) => act(() => startScan([...input.files], input));
+  const camera = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true, onchange: (e) => start(e.target) });
+  const upload = h('input', { type: 'file', accept: 'image/*,application/pdf', multiple: true, hidden: true, onchange: (e) => start(e.target) });
+  const zone = h('div', {
+    class: 'dropzone',
+    ondragover: (e) => { e.preventDefault(); zone.classList.add('over'); },
+    ondragleave: () => zone.classList.remove('over'),
+    ondrop: (e) => {
+      e.preventDefault();
+      zone.classList.remove('over');
+      act(() => startScan([...e.dataTransfer.files]));
+    },
+  },
+  h('span', { class: 'scan-icon' }, icon('camera', 24)),
+  h('h2', {}, 'Scan a delivery with AI'),
+  h('p', { class: 'muted' }, 'Take a photo of the invoice or the packs, or drop in a PDF. You check every line before anything is added.'),
+  h('div', { class: 'actions center' },
+    btn('Take photo', { icon: 'camera', kind: 'primary', onclick: () => camera.click() }),
+    btn('Upload photo or PDF', { icon: 'upload', onclick: () => upload.click() })),
+  scan?.status === 'error' && notice('bad', 'alert', scan.error),
+  camera, upload);
+  return card('scan-card', zone);
+}
+
+async function startScan(files, input) {
+  if (input) input.value = '';
+  if (!files.length) return;
+  if (files.length > 5) throw new RangeError('Scan up to 5 files at a time.');
+  const prepared = await Promise.all(files.map(ai.prepareFile));
+  const previews = prepared.map((f) => f.preview).filter(Boolean);
+  scan = { status: 'reading', files: prepared, previews, controller: new AbortController() };
+  render();
+  try {
+    const result = await ai.scanDelivery(aiConfig, { files: prepared, known: state.medicines.map(label) }, { signal: scan.controller.signal });
+    if (!result.items.length) throw new ai.AiError('No medicine lines were found. Try a sharper photo, taken closer to the page.');
+    scan = {
+      status: 'review', supplier: result.supplier, warnings: result.warnings,
+      rows: result.items.map((it) => ({ ...it, qty: it.qty ?? '', unitCost: it.unitCost ?? '' })),
+    };
+  } catch (err) {
+    scan = err.name === 'AbortError' ? null : { status: 'error', error: err.message };
+  } finally {
+    for (const src of previews) URL.revokeObjectURL(src);
+  }
+  if (currentRoute().name === 'receive') render();
+}
+
+function scannedItem(row) {
+  const num = (v) => (String(v).trim() === '' ? 0 : Number(v));
+  return {
+    name: row.name, strength: row.strength, form: row.form, batchNo: row.batchNo,
+    expiry: core.normalizeExpiry(row.expiry), qty: num(row.qty), unitCost: num(row.unitCost), reorderLevel: null,
+    note: scan?.supplier ? `Scanned delivery from ${scan.supplier}` : 'Scanned delivery',
+  };
+}
+
+function scannedProblem(row) {
+  const item = scannedItem(row);
+  return core.checkReceipt(item) ?? (item.expiry < today() ? 'This batch has already expired.' : null);
+}
+
+function reviewCard() {
+  const addLabel = h('span');
+  const addBtn = h('button', { class: 'btn primary', type: 'button', onclick: () => act(addScanned) }, icon('check', 18), addLabel);
+  const summary = h('span', { class: 'muted small' });
+  const refresh = () => {
+    const ready = scan.rows.filter((r) => !scannedProblem(r)).length;
+    const fixes = scan.rows.length - ready;
+    addLabel.textContent = `Add ${plural(ready, 'line')} to stock`;
+    addBtn.disabled = ready === 0;
+    summary.textContent = fixes
+      ? `${plural(fixes, 'line')} ${fixes === 1 ? 'needs' : 'need'} fixing first. The others can be added now.`
+      : 'Check the numbers against the paperwork, then add them.';
+  };
+  const fields = [['name', 'Medicine', 'wide'], ['strength', 'Strength'], ['form', 'Form'], ['batchNo', 'Batch'], ['expiry', 'Expiry'], ['qty', 'Units', 'num'], ['unitCost', 'Cost', 'num']];
+  const rows = scan.rows.map((row) => {
+    const status = h('td', { class: 'row-status' });
+    const tr = h('tr');
+    const check = () => {
+      const problem = scannedProblem(row);
+      tr.classList.toggle('has-problem', Boolean(problem));
+      status.replaceChildren(problem
+        ? h('span', { class: 'problem' }, icon('alert', 16), h('span', {}, problem))
+        : h('span', { class: 'ready' }, icon('check', 16), h('span', {}, 'Ready')));
+      refresh();
+    };
+    tr.append(
+      ...fields.map(([key, text, cls]) => h('td', { class: cls }, h('input', {
+        value: String(row[key] ?? ''), 'aria-label': text, inputmode: key === 'qty' ? 'numeric' : key === 'unitCost' ? 'decimal' : null,
+        oninput: (e) => { row[key] = e.target.value; check(); },
+      }))),
+      status,
+      h('td', {}, btn('', {
+        icon: 'close', kind: 'ghost', size: 'sm', title: 'Remove this line',
+        onclick: () => {
+          scan.rows = scan.rows.filter((r) => r !== row);
+          if (!scan.rows.length) scan = null;
+          render();
+        },
+      })));
+    check();
+    return tr;
+  });
+
+  return card('scan-card review',
+    cardHead('Check the scanned lines', {
+      iconName: 'assistant',
+      sub: scan.supplier ? `Delivery from ${scan.supplier}. Fix anything the AI misread.` : 'Fix anything the AI misread, then add the lines to stock.',
+      actions: [btn('Discard', { kind: 'ghost', size: 'sm', icon: 'trash', onclick: () => { scan = null; render(); } })],
+    }),
+    scan.warnings.length > 0 && notice('warn', 'alert', h('strong', {}, 'The AI noted: '), h('ul', {}, scan.warnings.map((w) => h('li', {}, w)))),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'table review-table' },
+      h('thead', {}, h('tr', {}, fields.map(([, text, cls]) => h('th', { scope: 'col', class: cls }, text)), h('th', { scope: 'col' }, 'Check'), h('th', {}))),
+      h('tbody', {}, rows))),
+    h('div', { class: 'review-foot' }, summary, addBtn));
+}
+
+async function addScanned() {
+  const ready = scan.rows.filter((r) => !scannedProblem(r));
+  if (!ready.length) return;
+  await commit(core.receiveMany(state, ready.map(scannedItem), ctx()));
+  toast(`Added ${plural(ready.length, 'line')} to stock.`);
+  scan.rows = scan.rows.filter((r) => !ready.includes(r));
+  if (!scan.rows.length) scan = null;
+  render();
+}
+
+function receiveForm(prefillId) {
   const pre = findMed(prefillId);
   const names = [...new Set(state.medicines.map((m) => m.name))].sort();
-  const expiryHint = h('small', { class: 'hint' }, 'As printed on the pack, for example 03/2027 or 2027-03-31.');
-
-  // Named lookups, because form.name would otherwise be the form's own name.
+  const defaultHint = 'As printed on the pack, for example 03/2027 or 2027-03-31.';
+  const expiryHint = h('small', { class: 'hint' }, defaultHint);
   const input = (key) => form.elements.namedItem(key);
 
   const showExpiry = () => {
     const raw = input('expiry').value.trim();
     const iso = core.normalizeExpiry(raw);
-    expiryHint.textContent = !raw ? 'As printed on the pack, for example 03/2027 or 2027-03-31.'
+    expiryHint.textContent = !raw ? defaultHint
       : iso ? `Last day it can be sold: ${fmtDate(iso)}${iso < today() ? '. This is already expired.' : ''}`
         : 'Not a date MedShelf can read. Try 03/2027 or 2027-03-31.';
-    expiryHint.className = `hint${raw && !iso ? ' error' : ''}`;
+    expiryHint.className = `hint${raw && (!iso || iso < today()) ? ' error' : ''}`;
   };
 
   const fillFromName = () => {
@@ -350,22 +715,25 @@ function viewReceive(prefillId) {
     input('reorderLevel').placeholder = `Now ${m.reorderLevel ?? 0}`;
   };
 
-  const form = h('form', { class: 'form', onsubmit: (e) => {
-    e.preventDefault();
-    act(async () => {
-      const f = new FormData(form);
-      const num = (k, blank) => (String(f.get(k)).trim() === '' ? blank : Number(f.get(k)));
-      const item = {
-        name: f.get('name'), strength: f.get('strength'), form: f.get('form'), batchNo: f.get('batchNo'),
-        expiry: core.normalizeExpiry(f.get('expiry')), qty: num('qty', 0), unitCost: num('unitCost', 0), reorderLevel: num('reorderLevel', null),
-      };
-      const put = core.receive(state, item, ctx());
-      await commit(put);
-      toast(`Added ${fmtNum(item.qty)} × ${label(findMed(put.batches[0].medicineId))}.`);
-      render();
-      main.querySelector('input[name=name]')?.focus();
-    });
-  } },
+  const form = h('form', {
+    class: 'form',
+    onsubmit: (e) => {
+      e.preventDefault();
+      act(async () => {
+        const f = new FormData(form);
+        const num = (k, blank) => (String(f.get(k)).trim() === '' ? blank : Number(f.get(k)));
+        const item = {
+          name: f.get('name'), strength: f.get('strength'), form: f.get('form'), batchNo: f.get('batchNo'),
+          expiry: core.normalizeExpiry(f.get('expiry')), qty: num('qty', 0), unitCost: num('unitCost', 0), reorderLevel: num('reorderLevel', null),
+        };
+        const put = core.receive(state, item, ctx());
+        await commit(put);
+        toast(`Added ${fmtNum(item.qty)} × ${label(findMed(put.batches[0].medicineId))}.`);
+        render();
+        main.querySelector('input[name=name]')?.focus();
+      });
+    },
+  },
   h('datalist', { id: 'med-names' }, names.map((n) => h('option', { value: n }))),
   h('datalist', { id: 'med-forms' }, FORMS.map((n) => h('option', { value: n }))),
   field('Medicine name', h('input', { name: 'name', required: true, list: 'med-names', autocomplete: 'off', value: pre?.name, onchange: fillFromName })),
@@ -374,16 +742,17 @@ function viewReceive(prefillId) {
     field('Form', h('input', { name: 'form', placeholder: 'Tablet', list: 'med-forms', autocomplete: 'off', value: pre?.form }))),
   h('div', { class: 'row' },
     field('Batch number', h('input', { name: 'batchNo', autocomplete: 'off' })),
-    field('Expiry', h('input', { name: 'expiry', required: true, autocomplete: 'off', inputmode: 'numeric', oninput: showExpiry }), null)),
-  expiryHint,
+    h('div', { class: 'field' },
+      h('label', { class: 'field-label', for: 'expiry' }, 'Expiry'),
+      h('input', { id: 'expiry', name: 'expiry', required: true, autocomplete: 'off', placeholder: 'MM/YYYY', oninput: showExpiry }),
+      expiryHint)),
   h('div', { class: 'row' },
     field('Units received', h('input', { name: 'qty', type: 'number', min: 1, step: 1, inputmode: 'numeric', required: true })),
     field('Cost per unit', h('input', { name: 'unitCost', type: 'number', min: 0, step: 'any', inputmode: 'decimal', placeholder: '0.00' }))),
   field('Reorder level', h('input', { name: 'reorderLevel', type: 'number', min: 0, step: 1, inputmode: 'numeric', placeholder: pre ? `Now ${pre.reorderLevel ?? 0}` : '0' }),
     'Warn me when stock falls to this many units. Leave blank to keep the current level.'),
-  h('div', { class: 'actions' }, h('button', { class: 'primary' }, 'Add to stock')));
-
-  return h('div', {}, h('h1', {}, 'Receive stock'), h('p', { class: 'muted' }, 'Enter each batch from the delivery. Use one line per batch number and expiry date.'), form);
+  h('div', { class: 'actions' }, btn('Add to stock', { icon: 'plus', kind: 'primary', type: 'submit' })));
+  return form;
 }
 
 /* ---------- Dispense ---------- */
@@ -391,51 +760,263 @@ function viewReceive(prefillId) {
 function viewDispense(prefillId) {
   const t = today();
   const meds = [...state.medicines].sort(byName);
-  if (!meds.length) return h('div', {}, h('h1', {}, 'Dispense'), h('p', {}, 'No stock yet. ', h('a', { href: '#/receive' }, 'Receive stock first.')));
-  const onHand = (m) => core.stockOnHand(state.batches.filter((b) => b.medicineId === m.id), t);
-  const preview = h('div', { class: 'preview', 'aria-live': 'polite' });
+  const head = pageHead('Dispense', 'MedShelf takes the earliest-expiring in-date batch first, and never expired stock.');
+  if (!meds.length) {
+    return h('div', { class: 'page' }, head,
+      card('', emptyState('dispense', 'No stock yet', 'Receive a delivery first.', btn('Receive stock', { icon: 'plus', kind: 'primary', href: '#/receive' }))));
+  }
+  const batchesOf = (id) => state.batches.filter((b) => b.medicineId === id);
+  const onHand = (m) => core.stockOnHand(batchesOf(m.id), t);
+  const plan = h('div', { class: 'plan', 'aria-live': 'polite' });
   const select = h('select', { name: 'medicine', required: true, onchange: () => update() },
     h('option', { value: '' }, 'Choose a medicine'),
     meds.map((m) => {
       const n = onHand(m);
       return h('option', { value: m.id, disabled: n === 0 }, `${label(m)}: ${n ? `${fmtNum(n)} in stock` : 'none in date'}`);
     }));
-  if (prefillId && findMed(prefillId) && onHand(findMed(prefillId)) > 0) select.value = prefillId;
-  const qty = h('input', { name: 'qty', type: 'number', min: 1, step: 1, inputmode: 'numeric', required: true, oninput: () => update() });
+  const pre = findMed(prefillId);
+  if (pre && onHand(pre) > 0) select.value = pre.id;
+  const qty = h('input', { name: 'qty', type: 'number', min: 1, step: 1, inputmode: 'numeric', required: true, placeholder: '0', oninput: () => update() });
+  const note = h('input', { name: 'note', autocomplete: 'off', placeholder: 'Prescription number or ward' });
 
   function update() {
-    preview.replaceChildren();
-    const q = Number(qty.value);
+    plan.replaceChildren();
     if (!select.value || !qty.value) return;
     try {
-      const plan = core.planDispense(state.batches.filter((b) => b.medicineId === select.value), q, t);
-      preview.append(h('p', {}, 'Take from:'), h('ul', {}, plan.map((p) => h('li', {},
-        `${fmtNum(p.qty)} from batch ${p.batchNo || '(no number)'}, expiry ${fmtDate(p.expiry)}`))));
+      const steps = core.planDispense(batchesOf(select.value), Number(qty.value), t);
+      plan.append(h('span', { class: 'plan-title' }, 'Take from'), h('ol', {}, steps.map((p) => h('li', {},
+        h('strong', {}, fmtNum(p.qty)), ` from batch ${p.batchNo || '(no number)'}`, h('span', { class: 'muted' }, ` · expires ${fmtDate(p.expiry)}`)))));
     } catch (err) {
-      preview.append(h('p', { class: 'error' }, err.message));
+      plan.append(notice('bad', 'alert', err.message));
     }
   }
 
-  const form = h('form', { class: 'form', onsubmit: (e) => {
-    e.preventDefault();
-    act(async () => {
-      const med = findMed(select.value);
-      const { put } = core.dispense(state, select.value, Number(qty.value), form.note.value, ctx());
-      await commit(put);
-      toast(`Dispensed ${qty.value} × ${label(med)}.`);
-      render();
-    });
-  } },
+  const form = h('form', {
+    class: 'form',
+    onsubmit: (e) => {
+      e.preventDefault();
+      act(async () => {
+        const med = findMed(select.value);
+        const { put } = core.dispense(state, select.value, Number(qty.value), note.value, ctx());
+        await commit(put);
+        toast(`Dispensed ${fmtNum(Number(qty.value))} × ${label(med)}.`);
+        render();
+      });
+    },
+  },
   field('Medicine', select),
-  field('Units', qty),
-  field('Note (optional)', h('input', { name: 'note', autocomplete: 'off', placeholder: 'Prescription number, patient initials, or ward' })),
-  preview,
-  h('div', { class: 'actions' }, h('button', { class: 'primary' }, 'Dispense')));
+  h('div', { class: 'row' }, field('Units', qty), field('Note (optional)', note, 'Stays on this device. Never sent to the AI.')),
+  plan,
+  h('div', { class: 'actions' }, btn('Dispense', { icon: 'check', kind: 'primary', type: 'submit' })));
   queueMicrotask(update);
-  return h('div', {}, h('h1', {}, 'Dispense'), h('p', { class: 'muted' }, 'MedShelf takes the earliest-expiring in-date batch first, and never expired stock.'), form);
+
+  const recent = state.movements.filter((m) => m.type === 'dispense').sort((a, b) => b.at.localeCompare(a.at)).slice(0, 8);
+  return h('div', { class: 'page' }, head,
+    h('div', { class: 'grid-2 wide-left' },
+      card('', form),
+      card('',
+        cardHead('Recently dispensed'),
+        recent.length
+          ? h('ul', { class: 'recent' }, recent.map((m) => {
+            const med = findMed(m.medicineId);
+            return h('li', {},
+              h('div', {}, h('strong', {}, med ? label(med) : 'Unknown medicine'), h('span', { class: 'muted small' }, `${fmtDate(m.date)}${m.note ? ` · ${m.note}` : ''}`)),
+              h('span', { class: 'qty-out' }, `−${fmtNum(m.qty)}`));
+          }))
+          : h('p', { class: 'muted' }, 'Nothing dispensed yet.'))));
+}
+
+/* ---------- Assistant ---------- */
+
+const SUGGESTIONS = [
+  'What needs my attention today?',
+  "Make this week's order list. My budget is 500.",
+  'Which medicines are costing me the most in waste?',
+  'What expires in the next 60 days, and what should I do about it?',
+];
+
+function viewAssistant() {
+  const head = pageHead('Assistant',
+    aiConfig.provider ? `Ask about your stock in plain English. Answers use your stock data and your ${ai.PROVIDERS[aiConfig.provider].name} key.` : 'Ask about your stock in plain English.',
+    [chat.messages.length > 0 && btn('New chat', { icon: 'plus', size: 'sm', onclick: () => { chat.controller?.abort(); chat.messages = []; render(); } })]);
+  if (!aiConfig.provider) return h('div', { class: 'page' }, head, connectCard('Connect an OpenAI or Claude key to ask questions about your stock.'));
+  if (!state.medicines.length) {
+    return h('div', { class: 'page' }, head, card('', emptyState('stock', 'Add some stock first', 'The assistant answers from your stock data.', btn('Receive stock', { icon: 'plus', kind: 'primary', href: '#/receive' }))));
+  }
+
+  const thread = h('div', { class: 'thread' }, chat.messages.length ? chat.messages.map(bubble) : suggestions());
+  const input = h('textarea', {
+    rows: 1, placeholder: 'Ask about your stock…', 'aria-label': 'Your question',
+    onkeydown: (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        form.requestSubmit();
+      }
+    },
+    oninput: (e) => {
+      e.target.style.height = 'auto';
+      e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
+    },
+  });
+  const form = h('form', {
+    class: 'composer',
+    onsubmit: (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text || chat.busy) return;
+      act(() => ask(text));
+    },
+  }, input, chat.busy
+    ? btn('', { icon: 'stop', title: 'Stop', onclick: () => chat.controller?.abort() })
+    : btn('', { icon: 'send', kind: 'primary', type: 'submit', title: 'Send' }));
+  queueMicrotask(() => { if (!chat.busy) input.focus(); });
+
+  return h('div', { class: 'page chat-page' }, head, thread, form,
+    h('p', { class: 'fineprint' }, 'AI can make mistakes. Check important numbers on the Stock screen. It does not give medical advice.'));
+}
+
+function suggestions() {
+  return h('div', { class: 'suggest' },
+    h('span', { class: 'connect-icon' }, icon('assistant', 26)),
+    h('h2', {}, 'What would you like to know?'),
+    h('div', { class: 'suggest-list' }, SUGGESTIONS.map((q) => h('button', { type: 'button', class: 'suggest-item', onclick: () => act(() => ask(q)) },
+      h('span', {}, q), icon('next', 16)))));
+}
+
+function bubble(m) {
+  if (m.role === 'user') return h('div', { class: 'msg user' }, h('div', { class: 'msg-body' }, m.display ?? m.content));
+  const body = h('div', { class: 'msg-body' });
+  m.node = body;
+  fillReply(body, m);
+  return h('div', { class: 'msg ai' }, h('span', { class: 'avatar' }, icon('assistant', 18)), body);
+}
+
+function fillReply(body, m) {
+  if (m.error) body.replaceChildren(notice('bad', 'alert', m.error));
+  else if (!m.content) body.replaceChildren(h('span', { class: 'typing', 'aria-label': 'Thinking' }, h('i'), h('i'), h('i')));
+  else body.replaceChildren(...[renderMarkdown(m.content), m.stopped && h('p', { class: 'muted small' }, 'Stopped.')].filter(Boolean));
+}
+
+function scrollToEnd() {
+  window.scrollTo(0, document.documentElement.scrollHeight);
+}
+
+async function ask(text) {
+  chat.messages.push({ role: 'user', content: text });
+  const reply = { role: 'assistant', content: '', pending: true };
+  chat.messages.push(reply);
+  chat.busy = true;
+  chat.controller = new AbortController();
+  render();
+  scrollToEnd();
+  const history = chat.messages.filter((m) => !m.pending && !m.error && m.content).map((m) => ({ role: m.role, content: m.content }));
+  let queued = false;
+  try {
+    await ai.streamChat(aiConfig, { system: ai.assistantSystem(core.aiStockContext(state, today(), state.settings)), messages: history }, (t) => {
+      reply.content = t;
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        if (!reply.node?.isConnected) return;
+        const nearEnd = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 200;
+        fillReply(reply.node, reply);
+        if (nearEnd) scrollToEnd();
+      });
+    }, { signal: chat.controller.signal });
+  } catch (err) {
+    if (err.name === 'AbortError') reply.stopped = true;
+    else reply.error = err.message;
+  } finally {
+    reply.pending = false;
+    chat.busy = false;
+    chat.controller = null;
+    if (currentRoute().name === 'assistant') {
+      render();
+      scrollToEnd();
+    }
+  }
 }
 
 /* ---------- Data ---------- */
+
+function aiSettingsCard() {
+  const keyInput = h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: 'Paste your API key', value: aiConfig.apiKey, 'aria-label': 'API key' });
+  const toggle = btn('', { icon: 'eye', kind: 'ghost', title: 'Show or hide the key', onclick: () => { keyInput.type = keyInput.type === 'password' ? 'text' : 'password'; } });
+  const detected = h('small', { class: 'hint' });
+  const modelInput = h('input', { list: 'ai-models', autocomplete: 'off', spellcheck: 'false', value: aiConfig.model, 'aria-label': 'Model' });
+  const models = h('datalist', { id: 'ai-models' });
+  const status = h('div', { 'aria-live': 'polite' });
+
+  const sync = () => {
+    const raw = keyInput.value.trim();
+    const p = ai.detectProvider(raw);
+    detected.textContent = p ? `${ai.PROVIDERS[p].name} key.` : raw ? 'This does not look like an OpenAI key (sk-…) or a Claude key (sk-ant-…).' : 'Works with OpenAI and Claude keys.';
+    detected.className = `hint${raw && !p ? ' error' : ''}`;
+    models.replaceChildren(...(p ? ai.PROVIDERS[p].models : []).map((m) => h('option', { value: m })));
+    if (p && (!modelInput.value.trim() || !ai.modelFits(p, modelInput.value))) modelInput.value = ai.PROVIDERS[p].defaultModel;
+  };
+  keyInput.addEventListener('input', sync);
+  sync();
+
+  const read = () => {
+    if (!ai.detectProvider(keyInput.value)) throw new RangeError('Paste an OpenAI key (it starts with sk-) or a Claude key (it starts with sk-ant-).');
+    return ai.cleanAiConfig({ apiKey: keyInput.value, model: modelInput.value });
+  };
+  const save = () => act(async () => {
+    const cfg = read();
+    await db.saveAi(cfg);
+    aiConfig = cfg;
+    channel?.postMessage('changed');
+    toast('AI connected. The key is saved only in this browser.');
+    render();
+  });
+  const test = () => act(async () => {
+    const cfg = read();
+    status.replaceChildren(h('div', { class: 'notice' }, h('span', { class: 'spinner sm' }), h('div', {}, `Testing ${cfg.model}…`)));
+    try {
+      await ai.testConnection(cfg);
+      status.replaceChildren(notice('ok', 'check', `Connected to ${ai.PROVIDERS[cfg.provider].name} (${cfg.model}). Save to use it.`));
+    } catch (err) {
+      status.replaceChildren(notice('bad', 'alert', err.message));
+    }
+  });
+  const remove = () => act(async () => {
+    await db.saveAi({});
+    aiConfig = ai.cleanAiConfig();
+    briefing = null;
+    chat.messages = [];
+    channel?.postMessage('changed');
+    toast('AI key removed from this browser.');
+    render();
+  });
+
+  const el = card('ai-settings',
+    cardHead('AI', { iconName: 'assistant', sub: aiConfig.provider ? `On · ${ai.PROVIDERS[aiConfig.provider].name} · ${aiConfig.model}` : 'Off' }),
+    h('div', { class: 'form plain' },
+      h('div', { class: 'field' },
+        h('span', { class: 'field-label' }, 'API key'),
+        h('div', { class: 'input-group' }, keyInput, toggle),
+        detected),
+      field('Model', modelInput, 'The default is a good choice. Change it only if your account uses a different model.'),
+      models,
+      h('div', { class: 'actions' },
+        btn('Save', { icon: 'check', kind: 'primary', onclick: save }),
+        btn('Test connection', { icon: 'refresh', onclick: test }),
+        aiConfig.provider && btn('Remove key', { icon: 'trash', kind: 'ghost', onclick: remove })),
+      status),
+    h('div', { class: 'privacy' },
+      h('strong', {}, 'How it works'),
+      h('ul', {},
+        h('li', {}, 'Your key is saved only in this browser. It is never put in backups and never sent anywhere except your AI provider.'),
+        h('li', {}, 'When you use an AI feature, MedShelf sends your stock list (medicine names, quantities, expiry dates and costs), or the photo you scanned, straight to your provider. Usage is billed to your account.'),
+        h('li', {}, 'Notes you type when dispensing are never sent.')),
+      h('p', { class: 'small' }, 'Get a key: ',
+        h('a', { href: ai.PROVIDERS.openai.keysUrl, target: '_blank', rel: 'noopener noreferrer' }, 'OpenAI'), ' or ',
+        h('a', { href: ai.PROVIDERS.anthropic.keysUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Claude'), '.')));
+  el.id = 'ai';
+  return el;
+}
 
 function viewData() {
   const s = state.settings;
@@ -448,14 +1029,19 @@ function viewData() {
     input.value = '';
     if (!file) return;
     const { items, errors } = core.readStockCSV(await file.text());
-    importResult.replaceChildren(
-      h('p', {}, `${file.name}: ${plural(items.length, 'row')} ready${errors.length ? `, ${plural(errors.length, 'row')} with problems` : ''}.`),
-      errors.length > 0 && h('ul', { class: 'errors' }, errors.slice(0, 20).map((e) => h('li', {}, `Row ${e.row}: ${e.message}`))),
-      items.length > 0 && h('button', { class: 'primary', onclick: () => act(async () => {
-        await commit(core.receiveMany(state, items, ctx()));
-        toast(`Imported ${plural(items.length, 'row')}.`);
-        location.hash = '#/stock';
-      }) }, `Add ${plural(items.length, 'row')} to stock`));
+    importResult.replaceChildren(...[
+      notice(errors.length ? 'warn' : 'ok', errors.length ? 'alert' : 'check',
+        h('strong', {}, file.name), `: ${plural(items.length, 'row')} ready${errors.length ? `, ${plural(errors.length, 'row')} with problems` : ''}.`,
+        errors.length > 0 && h('ul', {}, errors.slice(0, 20).map((e) => h('li', {}, `Row ${e.row}: ${e.message}`)))),
+      items.length > 0 && btn(`Add ${plural(items.length, 'row')} to stock`, {
+        icon: 'plus', kind: 'primary',
+        onclick: () => act(async () => {
+          await commit(core.receiveMany(state, items, ctx()));
+          toast(`Imported ${plural(items.length, 'row')}.`);
+          location.hash = '#/stock';
+        }),
+      }),
+    ].filter(Boolean));
   }
 
   async function restore(input) {
@@ -466,36 +1052,39 @@ function viewData() {
     const ok = confirm(`Replace everything on this device with this backup?\n\n${plural(data.medicines.length, 'medicine')}, ${plural(data.batches.length, 'batch', 'batches')}.\n\nWhat is on this device now will be lost.`);
     if (!ok) return;
     const { settings, ...records } = data;
-    await db.save({ ...records, meta: [{ id: 'settings', ...settings }] }, { replace: true });
+    await db.save({ ...records, meta: [{ id: 'settings', ...settings }, { id: 'ai', ...aiConfig }] }, { replace: true });
     state = { ...records, settings };
     channel?.postMessage('changed');
     toast('Backup restored.');
     location.hash = '#/dashboard';
   }
 
-  const settingsForm = h('form', { class: 'form', onsubmit: (e) => {
-    e.preventDefault();
-    act(async () => {
-      const f = e.target;
-      const ints = { warnDays: [1, 730], leadDays: [0, 365], coverDays: [1, 365] };
-      const changes = { currency: f.currency.value };
-      for (const [k, [min, max]] of Object.entries(ints)) {
-        const v = Number(f[k].value);
-        if (!Number.isInteger(v) || v < min || v > max) throw new RangeError(`${f[k].dataset.label} must be a whole number from ${min} to ${max}.`);
-        changes[k] = v;
-      }
-      await saveSettings(changes);
-      toast('Settings saved.');
-      render();
-    });
-  } },
+  const settingsForm = h('form', {
+    class: 'form plain',
+    onsubmit: (e) => {
+      e.preventDefault();
+      act(async () => {
+        const f = e.target.elements;
+        const ints = { warnDays: [1, 730, 'Warning days'], leadDays: [0, 365, 'Delivery days'], coverDays: [1, 365, 'Order cover days'] };
+        const changes = { currency: f.currency.value };
+        for (const [k, [min, max, name]] of Object.entries(ints)) {
+          const v = Number(f[k].value);
+          if (!Number.isInteger(v) || v < min || v > max) throw new RangeError(`${name} must be a whole number from ${min} to ${max}.`);
+          changes[k] = v;
+        }
+        await saveSettings(changes);
+        toast('Settings saved.');
+        render();
+      });
+    },
+  },
   h('div', { class: 'row' },
-    field('Warn about expiry this many days ahead', h('input', { name: 'warnDays', 'data-label': 'Warning days', type: 'number', min: 1, max: 730, step: 1, value: s.warnDays })),
-    field('Days a delivery takes', h('input', { name: 'leadDays', 'data-label': 'Delivery days', type: 'number', min: 0, max: 365, step: 1, value: s.leadDays }))),
+    field('Warn about expiry (days ahead)', h('input', { name: 'warnDays', type: 'number', min: 1, max: 730, step: 1, value: s.warnDays })),
+    field('Days a delivery takes', h('input', { name: 'leadDays', type: 'number', min: 0, max: 365, step: 1, value: s.leadDays }))),
   h('div', { class: 'row' },
-    field('Order enough for this many days', h('input', { name: 'coverDays', 'data-label': 'Order cover days', type: 'number', min: 1, max: 365, step: 1, value: s.coverDays })),
+    field('Order enough for (days)', h('input', { name: 'coverDays', type: 'number', min: 1, max: 365, step: 1, value: s.coverDays })),
     field('Currency symbol', h('input', { name: 'currency', maxlength: 5, placeholder: '£, $, Rs, ₦…', value: s.currency }))),
-  h('div', { class: 'actions' }, h('button', { class: 'primary' }, 'Save settings')));
+  h('div', { class: 'actions' }, btn('Save settings', { icon: 'check', kind: 'primary', type: 'submit' })));
 
   const stockCSV = () => {
     const lines = [core.STOCK_COLUMNS];
@@ -521,94 +1110,125 @@ function viewData() {
     render();
   });
   const erase = () => act(async () => {
-    if (!confirm('Erase all MedShelf data on this device? This cannot be undone.\n\nDownload a backup first if you might need it.')) return;
+    if (!confirm('Erase all MedShelf data on this device, including your AI key? This cannot be undone.\n\nDownload a backup first if you might need it.')) return;
     await db.save({}, { replace: true });
     state = { medicines: [], batches: [], movements: [], settings: { ...core.DEFAULT_SETTINGS } };
+    aiConfig = ai.cleanAiConfig();
+    briefing = null;
+    chat.messages = [];
     channel?.postMessage('changed');
     toast('All data erased.');
     location.hash = '#/dashboard';
   });
 
-  return h('div', {},
-    h('h1', {}, 'Data and settings'),
-    h('section', {},
-      h('h2', {}, 'Backup'),
-      h('p', {}, 'Your stock is stored only in this browser on this device. If the browser data is cleared or the device is lost, it is gone. Download a backup every week and keep it somewhere safe.'),
-      h('p', { class: 'muted' }, s.lastBackup ? `Last backup: ${fmtDate(s.lastBackup.slice(0, 10))}.` : 'No backup yet.'),
-      h('div', { class: 'actions' },
-        h('button', { class: 'primary', onclick: backup }, 'Download backup'),
-        h('button', { onclick: () => restoreInput.click() }, 'Restore from backup'),
-        restoreInput)),
-    h('section', {},
-      h('h2', {}, 'Import from a spreadsheet'),
-      h('p', {}, 'Save your stock list as CSV with these columns: ', h('code', {}, core.STOCK_COLUMNS.join(', ')),
-        '. Only name, expiry and qty are required. Each row is added as a delivery.'),
-      h('div', { class: 'actions' },
-        h('button', { onclick: () => csvInput.click() }, 'Choose CSV file'),
-        h('button', { onclick: () => download('medshelf-template.csv', core.toCSV([core.STOCK_COLUMNS, ['Paracetamol', '500 mg', 'Tablet', 'PCM2401', '03/2027', 500, 0.02, 200]]), 'text/csv') }, 'Download template'),
-        csvInput),
-      importResult),
-    h('section', {},
-      h('h2', {}, 'Export'),
-      h('div', { class: 'actions' },
-        h('button', { onclick: stockCSV }, 'Stock list (CSV)'),
-        h('button', { onclick: historyCSV }, 'Full history (CSV)'))),
-    h('section', {}, h('h2', {}, 'Settings'), settingsForm),
-    h('section', { class: 'danger-zone' },
-      h('h2', {}, 'Erase everything'),
-      h('p', {}, 'Removes all medicines, batches and history from this device.'),
-      h('button', { class: 'danger', onclick: erase }, 'Erase all data')));
+  const section = (id, cls, ...children) => {
+    const el = card(cls, ...children);
+    el.id = id;
+    return el;
+  };
+
+  return h('div', { class: 'page' },
+    pageHead('Data and settings', 'Everything is stored in this browser. Nothing is uploaded unless you use an AI feature.'),
+    h('div', { class: 'grid-2' },
+      aiSettingsCard(),
+      h('div', { class: 'stack' },
+        section('backup', '',
+          cardHead('Backup', { iconName: 'shield', sub: s.lastBackup ? `Last backup ${fmtDate(s.lastBackup.slice(0, 10))}` : 'No backup yet' }),
+          h('p', { class: 'muted' }, 'If the browser data is cleared or the device is lost, your stock goes with it. Download a backup every week and keep it somewhere safe.'),
+          h('div', { class: 'actions' },
+            btn('Download backup', { icon: 'download', kind: 'primary', onclick: backup }),
+            btn('Restore from backup', { icon: 'upload', onclick: () => restoreInput.click() }),
+            restoreInput)),
+        section('import', '',
+          cardHead('Import from a spreadsheet', { iconName: 'file' }),
+          h('p', { class: 'muted' }, 'Save your stock list as CSV with the columns ', h('code', {}, core.STOCK_COLUMNS.join(', ')),
+            '. Only name, expiry and qty are required. Each row is added as a delivery.'),
+          h('div', { class: 'actions' },
+            btn('Choose CSV file', { icon: 'upload', onclick: () => csvInput.click() }),
+            btn('Download template', {
+              icon: 'download', kind: 'ghost',
+              onclick: () => download('medshelf-template.csv', core.toCSV([core.STOCK_COLUMNS, ['Paracetamol', '500 mg', 'Tablet', 'PCM2401', '03/2027', 500, 0.02, 200]]), 'text/csv'),
+            }),
+            csvInput),
+          importResult))),
+    h('div', { class: 'grid-2' },
+      section('settings', '', cardHead('Preferences'), settingsForm),
+      h('div', { class: 'stack' },
+        section('export', '',
+          cardHead('Export', { iconName: 'download' }),
+          h('div', { class: 'actions' },
+            btn('Stock list (CSV)', { icon: 'download', onclick: stockCSV }),
+            btn('Full history (CSV)', { icon: 'download', onclick: historyCSV }))),
+        section('erase', 'danger-zone',
+          cardHead('Erase everything', { iconName: 'trash' }),
+          h('p', { class: 'muted' }, 'Removes all medicines, batches, history and your AI key from this device.'),
+          btn('Erase all data', { icon: 'trash', kind: 'danger', onclick: erase })))));
 }
 
 /* ---------- routing ---------- */
 
-const VIEWS = { dashboard: viewToday, stock: viewStock, receive: viewReceive, dispense: viewDispense, data: viewData };
-const TITLES = { dashboard: 'Today', stock: 'Stock', receive: 'Receive stock', dispense: 'Dispense', data: 'Data and settings' };
+const VIEWS = { dashboard: viewToday, stock: viewStock, receive: viewReceive, dispense: viewDispense, assistant: viewAssistant, data: viewData };
+const TITLES = { dashboard: 'Today', stock: 'Stock', receive: 'Receive stock', dispense: 'Dispense', assistant: 'Assistant', data: 'Data and settings' };
 
 function currentRoute() {
-  const [name, arg] = location.hash.replace(/^#\/?/, '').split('/');
-  return VIEWS[name] ? { name, arg: decodeURIComponent(arg ?? '') } : { name: 'dashboard', arg: '' };
+  const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
+  const [name, arg = ''] = path.split('/');
+  let decoded = '';
+  try {
+    decoded = decodeURIComponent(arg);
+  } catch {
+    // A mangled link just shows the list.
+  }
+  return VIEWS[name] ? { name, arg: decoded, params: new URLSearchParams(query) } : { name: 'dashboard', arg: '', params: new URLSearchParams() };
 }
 
 function render() {
-  const { name, arg } = currentRoute();
-  for (const a of document.querySelectorAll('[data-view]')) {
-    if (a.dataset.view === name) a.setAttribute('aria-current', 'page');
-    else a.removeAttribute('aria-current');
-  }
+  const { name, arg, params } = currentRoute();
+  if (name !== 'dashboard') briefingOut = null;
+  renderChrome(name);
   document.title = `${TITLES[name]} · MedShelf`;
-  main.replaceChildren(VIEWS[name](arg));
+  main.replaceChildren(VIEWS[name](arg, params));
 }
 
-window.addEventListener('hashchange', () => {
+function afterNavigate() {
   render();
-  window.scrollTo(0, 0);
-});
+  const { name, params } = currentRoute();
+  const section = params.get('section');
+  if (section) requestAnimationFrame(() => document.getElementById(section)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  else if (name === 'assistant' && chat.messages.length) requestAnimationFrame(scrollToEnd);
+  else window.scrollTo(0, 0);
+}
+
+window.addEventListener('hashchange', afterNavigate);
+window.addEventListener('online', () => renderChrome(currentRoute().name));
+window.addEventListener('offline', () => renderChrome(currentRoute().name));
 
 // Another tab saved something: reload so this tab never works from stale stock.
 channel?.addEventListener('message', () => act(async () => {
   state = await loadState();
   const { name } = currentRoute();
   if (name === 'dashboard' || name === 'stock') render();
+  else renderChrome(name);
 }));
 
 async function loadState() {
   const data = await db.loadAll();
-  return { ...data, settings: core.cleanSettings(data.settings) };
+  aiConfig = ai.cleanAiConfig(data.ai);
+  return { medicines: data.medicines, batches: data.batches, movements: data.movements, settings: core.cleanSettings(data.settings) };
 }
 
 async function start() {
   try {
     state = await loadState();
   } catch (err) {
-    main.replaceChildren(h('div', { class: 'notice bad' },
+    main.replaceChildren(notice('bad', 'alert',
       h('strong', {}, 'MedShelf cannot open its storage. '),
       'Private browsing or blocked site data can cause this. Open MedShelf in a normal window. ',
       h('small', {}, `(${err.message})`)));
     return;
   }
   if (!location.hash.startsWith('#/')) history.replaceState(null, '', '#/dashboard');
-  render();
+  afterNavigate();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('Offline mode unavailable:', err));
   }

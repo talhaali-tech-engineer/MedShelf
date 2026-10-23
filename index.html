@@ -2,9 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self' https://api.openai.com https://api.anthropic.com; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>MedShelf</title>
-  <meta name="description" content="Free medicine stock and expiry tracker for small pharmacies and clinics. Works offline; your data stays on your device.">
+  <meta name="description" content="Free medicine stock and expiry tracker for small pharmacies and clinics, with AI invoice scanning. Works offline; your data stays on your device.">
   <meta name="theme-color" content="#0f766e">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -14,18 +15,20 @@
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
-  <header class="top">
-    <a class="brand" href="#/dashboard"><img src="icons/icon.svg" alt="" width="28" height="28"><span>MedShelf</span></a>
-    <nav class="nav" aria-label="Main">
-      <a href="#/dashboard" data-view="dashboard">Today</a>
-      <a href="#/stock" data-view="stock">Stock</a>
-      <a href="#/receive" data-view="receive">Receive</a>
-      <a href="#/dispense" data-view="dispense">Dispense</a>
-      <a href="#/data" data-view="data">Data</a>
-    </nav>
-  </header>
-  <main id="main" tabindex="-1"><p class="muted">Loading…</p></main>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#/dashboard"><img src="icons/icon.svg" alt="" width="32" height="32"><span>MedShelf</span></a>
+      <nav class="nav" id="nav" aria-label="Main"></nav>
+      <div class="sidebar-foot" id="sidebar-foot"></div>
+    </aside>
+    <div class="content">
+      <header class="topbar">
+        <a class="brand" href="#/dashboard"><img src="icons/icon.svg" alt="" width="28" height="28"><span>MedShelf</span></a>
+      </header>
+      <main id="main" tabindex="-1"><p class="loading">Loading…</p></main>
+    </div>
+  </div>
   <div id="toast" class="toasts" role="status" aria-live="polite"></div>
-  <noscript><p class="notice bad">MedShelf needs JavaScript turned on.</p></noscript>
+  <noscript><p class="noscript">MedShelf needs JavaScript turned on.</p></noscript>
 </body>
 </html>

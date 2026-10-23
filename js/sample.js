@@ -35,6 +35,7 @@ export function sampleData(today, newId) {
     let carry = 0;
     let dispensed = 0;
     for (let d = 30; d >= 0; d--) {
+      if (addDays(today, -d) > source.expiry) break;
       carry += perDay;
       const qty = Math.floor(carry);
       if (qty === 0) continue;

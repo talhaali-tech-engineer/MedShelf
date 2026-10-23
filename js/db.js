@@ -35,8 +35,12 @@ export async function loadAll() {
     req.onerror = () => reject(req.error);
   });
   const [medicines, batches, movements, meta] = await Promise.all(STORES.map(all));
-  const { id, ...settings } = meta.find((m) => m.id === 'settings') ?? {};
-  return { medicines, batches, movements, settings };
+  const record = (key) => {
+    const { id, ...rest } = meta.find((m) => m.id === key) ?? {};
+    return rest;
+  };
+  // The AI key is its own record so it never ends up in a backup file.
+  return { medicines, batches, movements, settings: record('settings'), ai: record('ai') };
 }
 
 /** Saves { storeName: [records] }. With `replace`, every store is emptied first. */
@@ -52,4 +56,8 @@ export async function save(put, { replace = false } = {}) {
 
 export function saveSettings(settings) {
   return save({ meta: [{ id: 'settings', ...settings }] });
+}
+
+export function saveAi(config) {
+  return save({ meta: [{ id: 'ai', ...config }] });
 }

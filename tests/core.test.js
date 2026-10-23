@@ -138,6 +138,39 @@ test('summarize flags expired, expiring, low and at-risk stock', () => {
   assert.equal(cetRow.riskUnits, 150 - 26 * 4);
 });
 
+test('expiryOutlook groups stock by expiry month and keeps expired stock apart', () => {
+  const state = {
+    batches: [
+      { expiry: day(-3), qty: 10, unitCost: 1 },
+      { expiry: '2026-10-30', qty: 5, unitCost: 2 },
+      { expiry: '2027-01-15', qty: 4, unitCost: 0.5 },
+      { expiry: '2028-01-01', qty: 99, unitCost: 1 },
+      { expiry: '2026-12-01', qty: 0, unitCost: 1 },
+    ],
+  };
+  const out = core.expiryOutlook(state, TODAY, 12);
+  assert.deepEqual(out.expired, { month: 'expired', units: 10, value: 10, batches: 1 });
+  assert.equal(out.months.length, 12);
+  assert.equal(out.months[0].month, '2026-10');
+  assert.equal(out.months[11].month, '2027-09');
+  assert.equal(out.months[0].value, 10);
+  assert.deepEqual(out.months.find((m) => m.month === '2027-01'), { month: '2027-01', units: 4, value: 2, batches: 1 });
+  assert.equal(out.months.reduce((s, m) => s + m.units, 0), 9);
+});
+
+test('aiStockContext describes the stock but never includes notes', () => {
+  const c = ctx();
+  let state = empty();
+  state = core.applyChanges(state, core.receive(state, { name: 'Omeprazole', strength: '20 mg', batchNo: 'O1', expiry: day(-2), qty: 28, unitCost: 0.1 }, c));
+  state = core.applyChanges(state, core.receive(state, { name: 'Metformin', strength: '500 mg', batchNo: 'M1', expiry: day(200), qty: 90, unitCost: 0.03 }, c));
+  const { put } = core.dispense(state, state.medicines[1].id, 10, 'Patient J.S. Rx 1042', c);
+  state = core.applyChanges(state, put);
+  const text = core.aiStockContext(state, TODAY, core.DEFAULT_SETTINGS);
+  assert.match(text, /Metformin 500 mg \| 80 \|/);
+  assert.match(text, /O1:2026-10-21:28:0.1:EXPIRED/);
+  assert.doesNotMatch(text, /J\.S\.|1042/);
+});
+
 test('CSV round-trips and guards against spreadsheet formulas', () => {
   const rows = [['name', 'note'], ['Syrup, "kids"', '=HYPERLINK("x")'], ['Line\nbreak', '-5']];
   const csv = core.toCSV(rows);
