@@ -104,12 +104,61 @@ function inline(text) {
 }
 
 const BULLET = /^\s*[-*•]\s+(.*)/;
-const NUMBERED = /^\s*\d+[.)]\s+(.*)/;
+const NUMBERED = /^\s*(\d+)[.)]\s+(.*)/;
 const HEADING = /^\s*#{1,6}\s+(.*)/;
 const TABLE_ROW = /^\s*\|.*\|\s*$/;
 const TABLE_RULE = /^\s*\|?[\s:|-]*-{2,}[\s:|-]*\|?\s*$/;
 const isBlockStart = (l) => BULLET.test(l) || NUMBERED.test(l) || HEADING.test(l) || TABLE_ROW.test(l);
 const cells = (row) => row.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+
+const itemText = (l) => {
+  const b = l.match(BULLET);
+  return b ? b[1] : l.match(NUMBERED)?.[2];
+};
+const isItem = (l) => BULLET.test(l) || NUMBERED.test(l);
+
+/**
+ * One list starting at lines[start], with indented items nested one level under
+ * the item above. Blank lines between items do not end the list, and a numbered
+ * list keeps its numbering. Returns the index of the first line after the list.
+ */
+function renderList(lines, start, root) {
+  const numbered = !BULLET.test(lines[start]);
+  const list = h(numbered ? 'ol' : 'ul');
+  const first = Number(lines[start].match(NUMBERED)?.[1]);
+  if (numbered && first > 1) list.start = first;
+  let i = start;
+  let lastItem = null;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      let next = i + 1;
+      while (next < lines.length && !lines[next].trim()) next++;
+      if (next < lines.length && isItem(lines[next]) && (/^\s{2,}/.test(lines[next]) || BULLET.test(lines[next]) !== numbered)) {
+        i = next;
+        continue;
+      }
+      break;
+    }
+    if (!isItem(line)) break;
+    if (/^\s{2,}/.test(line) && lastItem) {
+      const tag = BULLET.test(line) ? 'ul' : 'ol';
+      let sub = [...lastItem.children].find((c) => c.tagName === tag.toUpperCase());
+      if (!sub) {
+        sub = h(tag);
+        lastItem.append(sub);
+      }
+      sub.append(h('li', {}, inline(itemText(line))));
+    } else {
+      if (BULLET.test(line) === numbered) break;
+      lastItem = h('li', {}, inline(itemText(line)));
+      list.append(lastItem);
+    }
+    i++;
+  }
+  root.append(list);
+  return i;
+}
 
 /** Renders the small subset of Markdown the AI uses: headings, lists, tables, bold and code. */
 export function renderMarkdown(text) {
@@ -136,13 +185,7 @@ export function renderMarkdown(text) {
         h('thead', {}, h('tr', {}, head.map((c) => h('th', {}, inline(c))))),
         h('tbody', {}, body.map((r) => h('tr', {}, r.map((c) => h('td', {}, inline(c)))))))));
     } else if (BULLET.test(line) || NUMBERED.test(line)) {
-      const pattern = BULLET.test(line) ? BULLET : NUMBERED;
-      const list = h(pattern === BULLET ? 'ul' : 'ol');
-      while (i < lines.length && (m = lines[i].match(pattern))) {
-        list.append(h('li', {}, inline(m[1])));
-        i++;
-      }
-      root.append(list);
+      i = renderList(lines, i, root);
     } else {
       const para = [];
       while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i])) para.push(lines[i++].trim());
