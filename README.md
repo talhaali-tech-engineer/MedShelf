@@ -22,7 +22,9 @@ Small pharmacies and clinics lose real money to medicine that expires on the she
 
 - **Scan a delivery.** Photograph the supplier invoice or the packs, or upload a PDF. The AI reads every line: name, strength, form, batch, expiry, quantity and cost. It matches lines to medicines you already stock, flags anything it couldn't read, and **you check every line before anything is saved.**
 - **Today's briefing.** A short, ranked plan for the day, written from your actual stock numbers.
-- **Assistant.** Ask about your stock in plain English, for example "Make this week's order list within a budget of 500" or "Which medicines are costing me the most in waste?"
+- **Assistant.** Ask about your stock in plain English, for example "Make this week's order list within a budget of 500" or "Which medicines are costing me the most in waste?" Its animated bot scans with its eyes while it thinks, and talks as the answer appears.
+
+![The assistant, ready for a question](docs/assistant.jpg)
 
 ![Checking lines read by the AI before they are added to stock (sample data)](docs/scan-review.jpg)
 

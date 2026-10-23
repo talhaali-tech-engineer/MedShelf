@@ -6,7 +6,7 @@ import * as db from './db.js';
 import * as ai from './ai.js';
 import { sampleData } from './sample.js';
 import { expiryChart } from './chart.js';
-import { h, icon, fmtDate, fmtMonth, fmtNum, fmtMoney, plural, daysText, toast, download, renderMarkdown } from './ui.js';
+import { h, icon, bot, setBotState, fmtDate, fmtMonth, fmtNum, fmtMoney, plural, daysText, toast, download, renderMarkdown } from './ui.js';
 
 const main = document.getElementById('main');
 const nav = document.getElementById('nav');
@@ -20,6 +20,7 @@ let askedToPersist = false;
 // AI work in progress lives here so it survives moving between screens.
 let briefing = null; // { day, text, busy, error }
 let briefingOut = null;
+let briefingBot = null;
 const chat = { messages: [], busy: false, controller: null };
 let scan = null; // { status: 'reading' | 'review' | 'error', ... }
 let todoExpanded = false;
@@ -80,8 +81,9 @@ const pageHead = (title, sub, actions = []) => h('header', { class: 'page-head' 
 
 const card = (cls, ...children) => h('section', { class: `card ${cls}`.trim() }, ...children);
 
-const cardHead = (title, { sub, iconName, actions = [] } = {}) => h('div', { class: 'card-head' },
-  h('div', { class: 'card-title' }, iconName && h('span', { class: 'card-icon' }, icon(iconName, 18)),
+const cardHead = (title, { sub, iconName, botNode, actions = [] } = {}) => h('div', { class: 'card-head' },
+  h('div', { class: 'card-title' },
+    botNode ? h('span', { class: 'card-icon bot-icon' }, botNode) : iconName && h('span', { class: 'card-icon' }, icon(iconName, 18)),
     h('div', {}, h('h2', {}, title), sub && h('p', { class: 'muted small' }, sub))),
   actions.filter(Boolean).length > 0 && h('div', { class: 'card-actions' }, actions));
 
@@ -111,7 +113,7 @@ function medicineBadges(row) {
 
 function connectCard(text) {
   return card('connect-card',
-    h('span', { class: 'connect-icon' }, icon('assistant', 26)),
+    bot(72),
     h('h2', {}, 'Connect AI'),
     h('p', { class: 'muted' }, text),
     btn('Connect a key', { icon: 'key', kind: 'primary', href: '#/data?section=ai' }));
@@ -238,7 +240,7 @@ function todoCard(s) {
 function briefingCard() {
   if (!aiConfig.provider) {
     return card('ai-card',
-      cardHead('AI briefing', { iconName: 'assistant' }),
+      cardHead('AI briefing', { botNode: bot(38) }),
       h('p', { class: 'muted' }, 'Connect your OpenAI or Claude key to get a plain-English plan for the day, scan invoices with your camera, and ask questions about your stock.'),
       btn('Connect AI', { icon: 'key', kind: 'primary', size: 'sm', href: '#/data?section=ai' }));
   }
@@ -247,9 +249,10 @@ function briefingCard() {
   briefingOut = out;
   paintBriefing(out);
   const busy = briefing?.busy;
+  briefingBot = bot(38, busy ? (briefing.text ? 'talking' : 'thinking') : 'idle');
   return card('ai-card',
     cardHead('AI briefing', {
-      iconName: 'assistant',
+      botNode: briefingBot,
       sub: `${ai.PROVIDERS[aiConfig.provider].name} · ${aiConfig.model}`,
       actions: [btn(briefing?.text ? 'Refresh' : "Write today's plan", {
         icon: briefing?.text ? 'refresh' : 'assistant', kind: briefing?.text ? 'ghost' : 'primary', size: 'sm', disabled: busy,
@@ -264,7 +267,7 @@ function paintBriefing(out = briefingOut) {
   if (!out) return;
   if (briefing?.error) out.replaceChildren(notice('bad', 'alert', briefing.error));
   else if (briefing?.text) out.replaceChildren(renderMarkdown(briefing.text));
-  else if (briefing?.busy) out.replaceChildren(h('div', { class: 'thinking' }, h('span', { class: 'spinner sm' }), 'Reading your stock…'));
+  else if (briefing?.busy) out.replaceChildren(h('div', { class: 'thinking' }, h('span', { class: 'typing' }, h('i'), h('i'), h('i')), 'Reading your stock…'));
   else out.replaceChildren(h('p', { class: 'muted' }, 'Get the most important things to do today, worked out from your stock.'));
 }
 
@@ -278,7 +281,10 @@ async function runBriefing() {
       messages: [{ role: 'user', content: ai.BRIEFING_PROMPT }],
     }, (text) => {
       current.text = text;
-      if (briefingOut?.isConnected) paintBriefing();
+      if (briefingOut?.isConnected) {
+        setBotState(briefingBot, 'talking');
+        paintBriefing();
+      }
     });
   } catch (err) {
     current.error = err.message;
@@ -556,7 +562,7 @@ function scanCard() {
   if (scan?.status === 'reading') {
     return card('scan-card',
       h('div', { class: 'scan-reading' },
-        h('span', { class: 'spinner' }),
+        bot(56, 'thinking'),
         h('div', {}, h('strong', {}, `Reading ${plural(scan.files.length, 'file')}…`), h('span', { class: 'muted small' }, 'This usually takes 10 to 40 seconds.'))),
       scan.previews.length > 0 && h('div', { class: 'thumbs' }, scan.previews.map((src) => h('img', { src, alt: 'Scanned page' }))),
       btn('Cancel', { kind: 'ghost', size: 'sm', onclick: () => scan.controller.abort() }));
@@ -669,7 +675,7 @@ function reviewCard() {
 
   return card('scan-card review',
     cardHead('Check the scanned lines', {
-      iconName: 'assistant',
+      botNode: bot(38),
       sub: scan.supplier ? `Delivery from ${scan.supplier}. Fix anything the AI misread.` : 'Fix anything the AI misread, then add the lines to stock.',
       actions: [btn('Discard', { kind: 'ghost', size: 'sm', icon: 'trash', onclick: () => { scan = null; render(); } })],
     }),
@@ -877,8 +883,9 @@ function viewAssistant() {
 
 function suggestions() {
   return h('div', { class: 'suggest' },
-    h('span', { class: 'connect-icon' }, icon('assistant', 26)),
-    h('h2', {}, 'What would you like to know?'),
+    bot(96),
+    h('h2', {}, 'Hi! What would you like to know?'),
+    h('p', { class: 'muted' }, 'I can see your stock, expiry dates and sales. Ask me anything about them.'),
     h('div', { class: 'suggest-list' }, SUGGESTIONS.map((q) => h('button', { type: 'button', class: 'suggest-item', onclick: () => act(() => ask(q)) },
       h('span', {}, q), icon('next', 16)))));
 }
@@ -887,9 +894,12 @@ function bubble(m) {
   if (m.role === 'user') return h('div', { class: 'msg user' }, h('div', { class: 'msg-body' }, m.display ?? m.content));
   const body = h('div', { class: 'msg-body' });
   m.node = body;
+  m.avatar = bot(38, replyState(m));
   fillReply(body, m);
-  return h('div', { class: 'msg ai' }, h('span', { class: 'avatar' }, icon('assistant', 18)), body);
+  return h('div', { class: 'msg ai' }, m.avatar, body);
 }
+
+const replyState = (m) => (m.pending ? (m.content ? 'talking' : 'thinking') : 'idle');
 
 function fillReply(body, m) {
   if (m.error) body.replaceChildren(notice('bad', 'alert', m.error));
@@ -920,6 +930,7 @@ async function ask(text) {
         queued = false;
         if (!reply.node?.isConnected) return;
         const nearEnd = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 200;
+        setBotState(reply.avatar, replyState(reply));
         fillReply(reply.node, reply);
         if (nearEnd) scrollToEnd();
       });
@@ -992,7 +1003,7 @@ function aiSettingsCard() {
   });
 
   const el = card('ai-settings',
-    cardHead('AI', { iconName: 'assistant', sub: aiConfig.provider ? `On · ${ai.PROVIDERS[aiConfig.provider].name} · ${aiConfig.model}` : 'Off' }),
+    cardHead('AI assistant', { botNode: bot(38), sub: aiConfig.provider ? `On · ${ai.PROVIDERS[aiConfig.provider].name} · ${aiConfig.model}` : 'Off' }),
     h('div', { class: 'form plain' },
       h('div', { class: 'field' },
         h('span', { class: 'field-label' }, 'API key'),

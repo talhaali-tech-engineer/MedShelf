@@ -7,12 +7,20 @@ import struct
 import zlib
 from pathlib import Path
 
-# (x, y, width, height, corner radius, RGB) in the SVG's 64-unit space, bottom first.
+GRADIENT = ((0x4F, 0x46, 0xE5), (0xA8, 0x55, 0xF7))  # top-left to bottom-right
+
+
+def background(px, py):
+    t = (px + py) / 128
+    return tuple(round(a + (b - a) * t) for a, b in zip(*GRADIENT))
+
+
+# (x, y, width, height, corner radius, RGB or a function of the point) in the SVG's 64-unit space, bottom first.
 SHAPES = [
-    (0, 0, 64, 64, 14, (0x0F, 0x76, 0x6E)),
+    (0, 0, 64, 64, 14, background),
     (27, 11, 10, 28, 2, (0xFF, 0xFF, 0xFF)),
     (18, 20, 28, 10, 2, (0xFF, 0xFF, 0xFF)),
-    (12, 45, 40, 6, 3, (0x99, 0xF6, 0xE4)),
+    (12, 45, 40, 6, 3, (0xC7, 0xD2, 0xFE)),
 ]
 SAMPLES = 3  # per axis, for smooth edges
 
@@ -39,7 +47,7 @@ def render(size):
                     colour = None
                     for x, y, w, h, r, rgb in SHAPES:
                         if inside(px, py, x, y, w, h, r):
-                            colour = rgb
+                            colour = rgb(px, py) if callable(rgb) else rgb
                     if colour:
                         total[0] += colour[0]
                         total[1] += colour[1]
