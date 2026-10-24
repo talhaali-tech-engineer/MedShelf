@@ -116,7 +116,7 @@ export const DEFAULT_SETTINGS = Object.freeze(cleanSettings());
 
 /* ---------- expiry and stock ---------- */
 
-/** The expiry date is the last day a batch may be dispensed. */
+/** The expiry date is the last day a batch may be issued. */
 export function expiryStatus(expiry, today, warnDays) {
   const left = daysBetween(today, expiry);
   if (left < 0) return 'expired';
@@ -162,7 +162,7 @@ export function planDispense(batches, qty, today) {
 }
 
 /**
- * Average units dispensed per day over the last `windowDays`.
+ * Average units issued per day over the last `windowDays`.
  * A medicine stocked only recently is averaged over the days it has been stocked
  * (at least a week, so one busy first day does not look like the normal rate).
  */
@@ -178,7 +178,7 @@ export function averageDailyUse(movements, today, windowDays = 30) {
 
 /**
  * Units that will probably expire on the shelf at the current rate of use.
- * Batches are used first-expiry-first-out; each can only be sold until its
+ * Batches are used first-expiry-first-out; each can only be used until its
  * expiry date, and whatever is left by then is at risk.
  */
 export function wasteRisk(batches, avgDaily, today) {
@@ -202,7 +202,7 @@ export function wasteRisk(batches, avgDaily, today) {
 /**
  * Whether to reorder and how much. Stock is low when it is out, at or below the
  * reorder level, or will run out before a new delivery arrives. The suggested
- * order covers the delivery wait plus `coverDays` of sales, and never less than
+ * order covers the delivery wait plus `coverDays` of usage, and never less than
  * twice the reorder level.
  */
 export function reorderAdvice({ onHand, avgDaily, reorderLevel = 0, leadDays = 7, coverDays = 30 }) {
@@ -250,7 +250,7 @@ export function summarize(state, today, settings = DEFAULT_SETTINGS) {
     }
 
     // Only trust a usage rate once the medicine has two weeks of history. With no
-    // sales at all, only flag stock that is already inside the warning window.
+    // usage at all, only flag stock that is already inside the warning window.
     const historyDays = moves.length ? daysBetween(earliestDate(moves), today) : 0;
     const risks = historyDays >= 14
       ? wasteRisk(batches, avgDaily, today).filter((r) => avgDaily > 0 || daysBetween(today, r.expiry) <= warnDays)
@@ -311,10 +311,10 @@ export function aiStockContext(state, today, settings = DEFAULT_SETTINGS) {
     `Today: ${today}. Currency symbol: ${s.currency || '(none set)'}. Expiry warning window: ${s.warnDays} days. Delivery takes ${s.leadDays} days. Orders cover ${s.coverDays} days.`,
     `Totals: in-date stock worth ${money2(totals.stockValue)}. Expired on the shelf: ${totals.expiredUnits} units worth ${money2(totals.expiredValue)}. `
       + `Expiring within ${s.warnDays} days: ${totals.expiringUnits} units worth ${money2(totals.expiringValue)}. `
-      + `Likely to expire unsold: ${totals.riskUnits} units worth ${money2(totals.riskValue)}. Medicines needing a reorder: ${totals.lowCount}.`,
+      + `Likely to expire before use: ${totals.riskUnits} units worth ${money2(totals.riskValue)}. Medicines needing a reorder: ${totals.lowCount}.`,
     'Write money with two decimal places, for example 1.40.',
     '',
-    'One medicine per line: name | in-date units | sold per day | days of stock left | reorder level | suggested order | likely to expire unsold (units, value) | expired on the shelf (units, value) | batches as number:expiry:units:cost per unit (EXPIRED marks expired batches)',
+    'One medicine per line: name | in-date units | issued per day | days of stock left | reorder level | suggested order | likely to expire before use (units, value) | expired on the shelf (units, value) | batches as number:expiry:units:cost per unit (EXPIRED marks expired batches)',
   ];
   for (const r of [...rows].sort((a, b) => medicineLabel(a.medicine).localeCompare(medicineLabel(b.medicine)))) {
     const own = (batchesBy.get(r.medicine.id) ?? []).sort((a, b) => a.expiry.localeCompare(b.expiry));

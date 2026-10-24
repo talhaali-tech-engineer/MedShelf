@@ -5,3 +5,12 @@ Thumbs.db
 *.log
 medshelf-backup-*.json
 media/
+.env
+.env.*
+*.pem
+*.key
+*.sqlite
+*.db
+dist/
+build/
+tmp/

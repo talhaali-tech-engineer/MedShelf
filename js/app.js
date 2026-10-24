@@ -131,7 +131,7 @@ const NAV = [
   { view: 'dashboard', text: 'Today', icon: 'today' },
   { view: 'stock', text: 'Stock', icon: 'stock' },
   { view: 'receive', text: 'Receive', icon: 'receive' },
-  { view: 'dispense', text: 'Dispense', icon: 'dispense' },
+  { view: 'issue', text: 'Record stock issue', icon: 'dispense' },
   { view: 'assistant', text: 'Assistant', icon: 'assistant' },
   { view: 'data', text: 'Data', icon: 'data' },
 ];
@@ -139,10 +139,10 @@ const NAV = [
 function renderChrome(active) {
   const item = (n) => h('a', { href: `#/${n.view}`, class: `nav-item nav-${n.view}`, 'aria-current': n.view === active ? 'page' : null },
     icon(n.icon, 22), h('span', {}, n.text));
-  // On phones, Receive and Dispense move behind one raised + button.
+  // On phones, Receive and Record stock issue move behind one raised + button.
   const quick = h('button', {
-    type: 'button', class: `nav-quick${active === 'receive' || active === 'dispense' ? ' active' : ''}`,
-    'aria-label': 'Dispense or receive stock', onclick: openQuickSheet,
+    type: 'button', class: `nav-quick${active === 'receive' || active === 'issue' ? ' active' : ''}`,
+    'aria-label': 'Record a stock issue or receive stock', onclick: openQuickSheet,
   }, h('span', { class: 'nav-quick-circle' }, icon('plus', 24)));
   nav.replaceChildren(...NAV.slice(0, 4).map(item), quick, ...NAV.slice(4).map(item));
   topbarStatus.replaceChildren(...[!navigator.onLine && h('span', { class: 'status-pill' }, icon('wifiOff', 14), 'Offline')].filter(Boolean));
@@ -174,7 +174,7 @@ function openQuickSheet() {
     },
   }, h('span', { class: 'sheet-icon' }, icon(iconName, 20)), h('span', { class: 'sheet-text' }, h('strong', {}, title), h('small', {}, text)), icon('next', 16));
   openSheet('What would you like to do?', (close) => h('div', { class: 'sheet-options' },
-    option('#/dispense', 'dispense', 'Dispense', 'Take stock off the shelf, oldest batch first')(close),
+    option('#/issue', 'dispense', 'Record stock issue', 'Record units taken off the shelf, oldest batch first')(close),
     option('#/receive', 'receive', 'Receive stock', 'Add a delivery, batch by batch')(close),
     aiConfig.provider && option('#/receive', 'camera', 'Scan an invoice', 'Photograph the paperwork and let AI read it',
       () => document.querySelector('.scan-card input[capture]')?.click())(close)));
@@ -205,8 +205,8 @@ function viewToday() {
       kpi('alert', totals.expiredUnits ? 'bad' : 'ok', 'Expired on the shelf', plural(totals.expiredUnits, 'unit'),
         totals.expiredUnits ? `${money(totals.expiredValue)} to write off` : 'Nothing to remove', '#/stock?filter=expired'),
       kpi('clock', totals.expiringUnits ? 'warn' : 'ok', `Expiring in ${state.settings.warnDays} days`, plural(totals.expiringUnits, 'unit'),
-        `${money(totals.expiringValue)} to sell first`, '#/stock?filter=expiring'),
-      kpi('waste', totals.riskUnits ? 'warn' : 'ok', 'Likely to expire unsold', plural(totals.riskUnits, 'unit'),
+        `${money(totals.expiringValue)} to use first`, '#/stock?filter=expiring'),
+      kpi('waste', totals.riskUnits ? 'warn' : 'ok', 'Likely to expire before use', plural(totals.riskUnits, 'unit'),
         `${money(totals.riskValue)} at risk`, '#/stock?filter=risk'),
       kpi('cart', totals.lowCount ? 'info' : 'ok', 'Need reordering', plural(totals.lowCount, 'medicine'), 'low or out of stock', '#/stock?filter=low')),
     h('div', { class: 'grid-2' },
@@ -244,15 +244,15 @@ function todoItems(s) {
   for (const { r, risk } of risky) {
     riskBatches.add(risk.batchId);
     items.push({
-      tone: 'warn', icon: 'waste', title: `About ${fmtNum(risk.atRisk)} × ${label(r.medicine)} won't sell in time`,
-      detail: `Batch ${risk.batchNo || '(no number)'} expires ${fmtDate(risk.expiry)}. Put it at the front, return it, or send it to a branch that uses more.`,
+      tone: 'warn', icon: 'waste', title: `About ${fmtNum(risk.atRisk)} × ${label(r.medicine)} may expire before use`,
+      detail: `Batch ${risk.batchNo || '(no number)'} expires ${fmtDate(risk.expiry)}. Flag it for authorised staff review: consider approved stock rotation, a supplier return, or another action permitted by local policy.`,
       action: view(r.medicine),
     });
   }
   for (const { medicine, batch, daysLeft } of s.expiring) {
     if (daysLeft > 30 || riskBatches.has(batch.id)) continue;
     items.push({
-      tone: 'info', icon: 'clock', title: `Sell first: ${label(medicine)}`,
+      tone: 'info', icon: 'clock', title: `Use first: ${label(medicine)}`,
       detail: `Batch ${batch.batchNo || '(no number)'} expires ${daysText(daysLeft)} · ${plural(batch.qty, 'unit')} left`,
       action: view(medicine),
     });
@@ -355,10 +355,10 @@ function reorderCard(s) {
   if (!low.length) return null;
   return card('',
     cardHead('Order list', {
-      sub: 'Enough to cover the delivery wait plus your order period, based on the last 30 days of sales',
+      sub: 'Enough to cover the delivery wait plus your order period, based on the last 30 days of use',
       actions: [btn('Download CSV', { icon: 'download', size: 'sm', onclick: () => downloadReorder(low) })],
     }),
-    table(['Medicine', { text: 'In stock', cls: 'num' }, { text: 'Sells per day', cls: 'num hide-sm' }, 'Runs out', { text: 'Order', cls: 'num' }],
+    table(['Medicine', { text: 'In stock', cls: 'num' }, { text: 'Used per day', cls: 'num hide-sm' }, 'Runs out', { text: 'Order', cls: 'num' }],
       low.map((r) => h('tr', {},
         h('td', {}, h('a', { href: `#/stock/${r.medicine.id}`, class: 'med-name' }, r.medicine.name), h('span', { class: 'med-sub' }, medSub(r.medicine))),
         h('td', { class: 'num' }, fmtNum(r.onHand)),
@@ -368,7 +368,7 @@ function reorderCard(s) {
 }
 
 function downloadReorder(rows) {
-  const lines = [['medicine', 'strength', 'form', 'in_stock', 'sells_per_day', 'suggested_order']];
+  const lines = [['medicine', 'strength', 'form', 'in_stock', 'used_per_day', 'suggested_order']];
   for (const r of rows) lines.push([r.medicine.name, r.medicine.strength, r.medicine.form, r.onHand, Math.round(r.avgDaily * 10) / 10, r.orderQty]);
   download(`medshelf-order-${today()}.csv`, core.toCSV(lines), 'text/csv');
 }
@@ -387,19 +387,23 @@ function viewWelcome() {
     h('span', { class: 'feature-icon' }, icon(iconName, 22)), h('strong', {}, title), h('p', {}, text));
   return h('div', { class: 'page welcome' },
     h('div', { class: 'hero' },
-      h('span', { class: 'eyebrow' }, icon('shield', 16), 'Free and open source · Works offline · Data stays on your device'),
+      h('span', { class: 'eyebrow' }, icon('shield', 16), 'Free and open source · Core works offline · Data stays on your device'),
       h('h1', {}, 'Stop losing money to expired medicine'),
-      h('p', { class: 'lead' }, 'MedShelf tracks every batch and its expiry date, sells the oldest stock first, warns you before medicine expires or runs out, and tells you exactly what to order.'),
+      h('p', { class: 'lead' }, 'MedShelf tracks every batch and its expiry date, issues the oldest stock first, warns you before medicine expires or runs out, and tells you what to reorder.'),
       h('div', { class: 'actions' },
         btn('Add your first delivery', { icon: 'plus', kind: 'primary', href: '#/receive' }),
         btn('Try it with sample data', { icon: 'next', onclick: () => act(loadSample) }),
         btn('Import a spreadsheet', { kind: 'ghost', href: '#/data?section=import' }))),
     h('div', { class: 'features' },
       feature('alert', 'Catch expired stock', 'See what to take off the shelf today, and what it cost you.'),
-      feature('waste', 'Predict waste', 'Find batches that will expire before they sell, while there is still time to act.'),
-      feature('cart', 'Order the right amount', 'Reorder suggestions from your real sales, ready to send to your supplier.'),
-      feature('assistant', 'AI built in', 'Scan invoices with your camera and ask questions about your stock, using your own OpenAI or Claude key.')));
+      feature('waste', 'Predict waste', 'Find batches likely to expire before they are used, while there is still time to act.'),
+      feature('cart', 'Order the right amount', 'Reorder suggestions from your real usage, ready to send to your supplier.'),
+      feature('assistant', 'AI built in', 'Scan invoices and ask questions about your stock with your own OpenAI or Claude key. Needs internet.')),
+    h('p', { class: 'scope-note' }, icon('shield', 16), h('span', {}, SCOPE)));
 }
+
+// The product's safety boundary, shown wherever it matters.
+const SCOPE = 'MedShelf supports inventory administration only. It does not prescribe, diagnose, recommend treatment or replace a pharmacy dispensing system.';
 
 async function loadSample() {
   await commit(sampleData(today(), newId));
@@ -481,7 +485,7 @@ function viewMedicine(id) {
   const batches = state.batches.filter((b) => b.medicineId === id && b.qty > 0).sort((a, b) => a.expiry.localeCompare(b.expiry));
   const history = state.movements.filter((m) => m.medicineId === id).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 100);
   const batchNo = (bid) => state.batches.find((b) => b.id === bid)?.batchNo || '—';
-  const kinds = { receive: ['Received', 'ok'], dispense: ['Dispensed', 'info'], writeoff: ['Written off', 'bad'] };
+  const kinds = { receive: ['Received', 'ok'], dispense: ['Issued', 'info'], writeoff: ['Written off', 'bad'] };
   const value = batches.filter((b) => b.expiry >= t).reduce((sum, b) => sum + b.qty * (b.unitCost ?? 0), 0);
   const stat = (name, big, small) => h('div', { class: 'stat' }, h('span', {}, name), h('strong', {}, big), small && h('small', {}, small));
 
@@ -503,19 +507,19 @@ function viewMedicine(id) {
   return h('div', { class: 'page' },
     h('a', { class: 'back-link', href: '#/stock' }, icon('back', 16), 'All stock'),
     pageHead(med.name, medSub(med) || null, [
-      btn('Dispense', { icon: 'dispense', kind: 'primary', href: `#/dispense/${id}` }),
+      btn('Record issue', { icon: 'dispense', kind: 'primary', href: `#/issue/${id}` }),
       btn('Receive more', { icon: 'receive', href: `#/receive/${id}` }),
     ]),
     h('div', { class: 'badges spaced' }, medicineBadges(row)),
     h('div', { class: 'stats' },
       stat('In stock', fmtNum(row.onHand), 'in-date units'),
-      stat('Sells per day', row.avgDaily ? fmtNum(row.avgDaily) : '—', 'last 30 days'),
+      stat('Used per day', row.avgDaily ? fmtNum(row.avgDaily) : '—', 'last 30 days'),
       stat('Runs out', row.daysLeft === null ? '—' : `~${plural(Math.floor(row.daysLeft), 'day')}`),
       stat('Suggested order', row.orderQty ? fmtNum(row.orderQty) : '—'),
       stat('Stock value', money(value))),
     h('div', { class: 'grid-2 wide-left' },
       card('',
-        cardHead('Batches on the shelf', { sub: 'Earliest expiry first. Expired batches are never dispensed.' }),
+        cardHead('Batches on the shelf', { sub: 'Earliest expiry first. Expired batches are never issued.' }),
         batches.length
           ? table(['Batch', 'Expiry', { text: 'Units', cls: 'num' }, { text: 'Cost', cls: 'num hide-sm' }, 'Status', ''], batches.map((b) => {
             const status = core.expiryStatus(b.expiry, t, state.settings.warnDays);
@@ -752,7 +756,7 @@ function receiveForm(prefillId) {
     const raw = input('expiry').value.trim();
     const iso = core.normalizeExpiry(raw);
     expiryHint.textContent = !raw ? defaultHint
-      : iso ? `Last day it can be sold: ${fmtDate(iso)}${iso < today() ? '. This is already expired.' : ''}`
+      : iso ? `Last day it can be used: ${fmtDate(iso)}${iso < today() ? '. This is already expired.' : ''}`
         : 'Not a date MedShelf can read. Try 03/2027 or 2027-03-31.';
     expiryHint.className = `hint${raw && (!iso || iso < today()) ? ' error' : ''}`;
   };
@@ -806,12 +810,12 @@ function receiveForm(prefillId) {
   return form;
 }
 
-/* ---------- Dispense ---------- */
+/* ---------- Record stock issue ---------- */
 
 function viewDispense(prefillId) {
   const t = today();
   const meds = [...state.medicines].sort(byName);
-  const head = pageHead('Dispense', 'MedShelf takes the earliest-expiring in-date batch first, and never expired stock.');
+  const head = pageHead('Record stock issue', 'Record units taken off the shelf. They come from the earliest-expiring in-date batch first, never from expired stock.');
   if (!meds.length) {
     return h('div', { class: 'page' }, head,
       card('', emptyState('dispense', 'No stock yet', 'Receive a delivery first.', btn('Receive stock', { icon: 'plus', kind: 'primary', href: '#/receive' }))));
@@ -836,7 +840,7 @@ function viewDispense(prefillId) {
     btn('', { icon: 'minus', title: 'One fewer', onclick: () => nudge(-1) }),
     qty,
     btn('', { icon: 'plus', title: 'One more', onclick: () => nudge(1) }));
-  const note = h('input', { name: 'note', autocomplete: 'off', placeholder: 'Prescription number or ward' });
+  const note = h('input', { name: 'note', autocomplete: 'off', placeholder: 'Reference, for example a ward or order number' });
 
   function update() {
     plan.replaceChildren();
@@ -858,7 +862,7 @@ function viewDispense(prefillId) {
         const med = findMed(select.value);
         const { put } = core.dispense(state, select.value, Number(qty.value), note.value, ctx());
         await commit(put);
-        toast(`Dispensed ${fmtNum(Number(qty.value))} × ${label(med)}.`);
+        toast(`Recorded ${fmtNum(Number(qty.value))} × ${label(med)} issued.`);
         render();
       });
     },
@@ -866,23 +870,25 @@ function viewDispense(prefillId) {
   field('Medicine', select),
   h('div', { class: 'row' }, field('Units', stepper), field('Note (optional)', note, 'Stays on this device. Never sent to the AI.')),
   plan,
-  h('div', { class: 'actions' }, btn('Dispense', { icon: 'check', kind: 'primary', type: 'submit' })));
+  h('div', { class: 'actions' }, btn('Record units issued', { icon: 'check', kind: 'primary', type: 'submit' })));
   queueMicrotask(update);
 
-  const recent = state.movements.filter((m) => m.type === 'dispense').sort((a, b) => b.at.localeCompare(a.at)).slice(0, 8);
+  const recent = [...state.movements].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 8);
+  const kinds = { receive: ['Received', '+'], dispense: ['Issued', '−'], writeoff: ['Written off', '−'] };
   return h('div', { class: 'page' }, head,
     h('div', { class: 'grid-2 wide-left' },
       card('', form),
       card('',
-        cardHead('Recently dispensed'),
+        cardHead('Recent stock movements'),
         recent.length
           ? h('ul', { class: 'recent' }, recent.map((m) => {
             const med = findMed(m.medicineId);
+            const [kind, sign] = kinds[m.type];
             return h('li', {},
-              h('div', {}, h('strong', {}, med ? label(med) : 'Unknown medicine'), h('span', { class: 'muted small' }, `${fmtDate(m.date)}${m.note ? ` · ${m.note}` : ''}`)),
-              h('span', { class: 'qty-out' }, `−${fmtNum(m.qty)}`));
+              h('div', {}, h('strong', {}, med ? label(med) : 'Unknown medicine'), h('span', { class: 'muted small' }, `${kind} · ${fmtDate(m.date)}${m.note ? ` · ${m.note}` : ''}`)),
+              h('span', { class: `qty-out ${m.type}` }, `${sign}${fmtNum(m.qty)}`));
           }))
-          : h('p', { class: 'muted' }, 'Nothing dispensed yet.'))));
+          : h('p', { class: 'muted' }, 'No stock movements yet.'))));
 }
 
 /* ---------- Assistant ---------- */
@@ -931,14 +937,14 @@ function viewAssistant() {
   queueMicrotask(() => { if (!chat.busy) input.focus(); });
 
   return h('div', { class: 'page chat-page' }, head, thread, form,
-    h('p', { class: 'fineprint' }, 'AI can make mistakes. Check important numbers on the Stock screen. It does not give medical advice.'));
+    h('p', { class: 'fineprint' }, `AI can make mistakes. Check important numbers on the Stock screen. ${SCOPE}`));
 }
 
 function suggestions() {
   return h('div', { class: 'suggest' },
     bot(72),
     h('h2', {}, 'Ask about your stock'),
-    h('p', { class: 'muted' }, 'The assistant can see your stock levels, expiry dates and sales from the last 30 days.'),
+    h('p', { class: 'muted' }, 'The assistant can see your stock levels, expiry dates and usage from the last 30 days.'),
     h('div', { class: 'suggest-list' }, SUGGESTIONS.map((q) => h('button', { type: 'button', class: 'suggest-item', onclick: () => act(() => ask(q)) },
       h('span', {}, q), icon('next', 16)))));
 }
@@ -1074,7 +1080,8 @@ function aiSettingsCard() {
       h('ul', {},
         h('li', {}, 'Your key is saved only in this browser. It is never put in backups and never sent anywhere except your AI provider.'),
         h('li', {}, 'When you use an AI feature, MedShelf sends your stock list (medicine names, quantities, expiry dates and costs), or the photo you scanned, straight to your provider. Usage is billed to your account.'),
-        h('li', {}, 'Notes you type when dispensing are never sent.')),
+        h('li', {}, 'Notes you type when recording a stock issue are never sent.'),
+        h('li', {}, 'AI features need an internet connection. Everything else works offline.')),
       h('p', { class: 'small' }, 'Get a key: ',
         h('a', { href: ai.PROVIDERS.openai.keysUrl, target: '_blank', rel: 'noopener noreferrer' }, 'OpenAI'), ' or ',
         h('a', { href: ai.PROVIDERS.anthropic.keysUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Claude'), '.')));
@@ -1226,13 +1233,15 @@ function viewData() {
         section('erase', 'danger-zone',
           cardHead('Erase everything', { iconName: 'trash' }),
           h('p', { class: 'muted' }, 'Removes all medicines, batches, history and your AI key from this device.'),
-          btn('Erase all data', { icon: 'trash', kind: 'danger', onclick: erase })))));
+          btn('Erase all data', { icon: 'trash', kind: 'danger', onclick: erase })))),
+    h('p', { class: 'scope-note' }, icon('shield', 16), h('span', {}, SCOPE)));
 }
 
 /* ---------- routing ---------- */
 
-const VIEWS = { dashboard: viewToday, stock: viewStock, receive: viewReceive, dispense: viewDispense, assistant: viewAssistant, data: viewData };
-const TITLES = { dashboard: 'Today', stock: 'Stock', receive: 'Receive stock', dispense: 'Dispense', assistant: 'Assistant', data: 'Data and settings' };
+// 'dispense' still opens the stock-issue screen so older links keep working.
+const VIEWS = { dashboard: viewToday, stock: viewStock, receive: viewReceive, issue: viewDispense, dispense: viewDispense, assistant: viewAssistant, data: viewData };
+const TITLES = { dashboard: 'Today', stock: 'Stock', receive: 'Receive stock', issue: 'Record stock issue', dispense: 'Record stock issue', assistant: 'Assistant', data: 'Data and settings' };
 
 function currentRoute() {
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');

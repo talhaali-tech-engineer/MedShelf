@@ -210,7 +210,7 @@ main.enter > .page { animation: page-in 0.22s ease-out; }
   .nav-item:hover .icon { color: var(--muted); }
   .nav-item[aria-current="page"] .icon { color: var(--accent); }
   .nav-item[aria-current="page"]::before { left: 50%; top: -7px; bottom: auto; width: 22px; height: 3px; margin-left: -11px; border-radius: 0 0 3px 3px; background: var(--accent); }
-  .nav-receive, .nav-dispense { display: none; }
+  .nav-receive, .nav-issue { display: none; }
   .nav-quick { display: flex; flex: 1; justify-content: center; padding: 0; border: 0; background: none; cursor: pointer; }
   .nav-quick-circle {
     display: grid; place-items: center; width: 54px; height: 54px; margin: -26px 0 4px; border-radius: 50%;
@@ -741,3 +741,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
   body { background: #fff; }
   .card { box-shadow: none; break-inside: avoid; }
 }
+
+/* ---------- scope statement ---------- */
+
+.scope-note { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5; }
+.scope-note .icon { flex: none; margin-top: 2px; }
+.qty-out.receive { color: var(--ok); }

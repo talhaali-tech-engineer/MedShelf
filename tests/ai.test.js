@@ -26,6 +26,15 @@ function fakeFetch(status, body) {
   return { fetchImpl, calls };
 }
 
+test('the assistant is held to inventory work and never told to promote medicine', () => {
+  const system = ai.assistantSystem('Paracetamol 500 mg | 10 | ...');
+  assert.match(system, /inventory administration only/);
+  assert.match(system, /does not prescribe, diagnose, recommend treatment or replace a pharmacy dispensing system/);
+  assert.match(system, /Never suggest promoting, discounting, advertising or selling more/);
+  assert.match(system, /authorised staff review/);
+  assert.doesNotMatch(system, /sell first|sold per day|unsold/i);
+});
+
 test('detectProvider tells OpenAI and Claude keys apart', () => {
   assert.equal(ai.detectProvider('sk-proj-abcdefghijklmnopqrstuv'), 'openai');
   assert.equal(ai.detectProvider('sk-ant-api03-abcdefghijklmnop'), 'anthropic');
