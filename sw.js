@@ -1,7 +1,7 @@
 // Offline support: serve the app from the cache, refresh the cache in the background.
 // Bump CACHE on every release so old files are dropped.
 
-const CACHE = 'medshelf-v6';
+const CACHE = 'medshelf-v7';
 const SHELL = [
   './',
   'index.html',

@@ -9,6 +9,9 @@ import { expiryChart } from './chart.js';
 import { h, icon, bot, setBotState, fmtDate, fmtMonth, fmtNum, fmtMoney, plural, daysText, toast, download, renderMarkdown } from './ui.js';
 
 const main = document.getElementById('main');
+const topbar = document.getElementById('topbar');
+const topbarTitle = document.getElementById('topbar-title');
+const topbarStatus = document.getElementById('topbar-status');
 const nav = document.getElementById('nav');
 const sidebarFoot = document.getElementById('sidebar-foot');
 const channel = 'BroadcastChannel' in window ? new BroadcastChannel('medshelf') : null;
@@ -95,8 +98,11 @@ const emptyState = (iconName, title, text, ...actions) => h('div', { class: 'emp
   h('span', { class: 'empty-icon' }, icon(iconName, 24)), h('strong', {}, title), text && h('p', { class: 'muted' }, text),
   actions.length > 0 && h('div', { class: 'actions center' }, actions));
 
+// On phones these tables turn into cards; each cell carries its column name as a label.
 function table(heads, rows, cls = '') {
-  return h('div', { class: 'table-wrap' }, h('table', { class: `table ${cls}`.trim() },
+  const labels = heads.map((x) => (typeof x === 'string' ? x : x.text));
+  for (const row of rows) [...row.children].forEach((td, i) => { if (labels[i]) td.dataset.label = labels[i]; });
+  return h('div', { class: 'table-wrap' }, h('table', { class: `table as-cards ${cls}`.trim() },
     h('thead', {}, h('tr', {}, heads.map((x) => (typeof x === 'string' ? h('th', { scope: 'col' }, x) : h('th', { scope: 'col', class: x.cls }, x.text))))),
     h('tbody', {}, rows)));
 }
@@ -131,14 +137,47 @@ const NAV = [
 ];
 
 function renderChrome(active) {
-  nav.replaceChildren(...NAV.map((n) => h('a', { href: `#/${n.view}`, class: 'nav-item', 'aria-current': n.view === active ? 'page' : null },
-    icon(n.icon, 22), h('span', {}, n.text))));
+  const item = (n) => h('a', { href: `#/${n.view}`, class: `nav-item nav-${n.view}`, 'aria-current': n.view === active ? 'page' : null },
+    icon(n.icon, 22), h('span', {}, n.text));
+  // On phones, Receive and Dispense move behind one raised + button.
+  const quick = h('button', {
+    type: 'button', class: `nav-quick${active === 'receive' || active === 'dispense' ? ' active' : ''}`,
+    'aria-label': 'Dispense or receive stock', onclick: openQuickSheet,
+  }, h('span', { class: 'nav-quick-circle' }, icon('plus', 24)));
+  nav.replaceChildren(...NAV.slice(0, 4).map(item), quick, ...NAV.slice(4).map(item));
+  topbarStatus.replaceChildren(...[!navigator.onLine && h('span', { class: 'status-pill' }, icon('wifiOff', 14), 'Offline')].filter(Boolean));
   sidebarFoot.replaceChildren(...[
     h('div', { class: 'foot-item' }, icon('shield', 16), h('span', {}, 'Stock stays on this device')),
     h('a', { class: `foot-item${aiConfig.provider ? ' on' : ''}`, href: '#/data?section=ai' }, icon('assistant', 16),
       h('span', {}, aiConfig.provider ? `AI on · ${aiConfig.model}` : 'AI off · connect a key')),
     !navigator.onLine && h('div', { class: 'foot-item' }, icon('wifiOff', 16), h('span', {}, 'Offline · AI paused')),
   ].filter(Boolean));
+}
+
+/** A sheet that slides up from the bottom of the screen on phones. */
+function openSheet(title, ...content) {
+  const sheet = h('dialog', { class: 'dialog sheet', 'aria-label': title });
+  const close = () => sheet.close();
+  sheet.append(h('h2', {}, title), ...content.filter(Boolean).map((c) => (typeof c === 'function' ? c(close) : c)), btn('Cancel', { kind: 'ghost', onclick: close }));
+  sheet.addEventListener('click', (e) => { if (e.target === sheet) close(); });
+  sheet.addEventListener('close', () => sheet.remove());
+  document.body.append(sheet);
+  sheet.showModal();
+}
+
+function openQuickSheet() {
+  const option = (href, iconName, title, text, after) => (close) => h('a', {
+    class: 'sheet-option', href,
+    onclick: () => {
+      close();
+      if (after) setTimeout(after, 80);
+    },
+  }, h('span', { class: 'sheet-icon' }, icon(iconName, 20)), h('span', { class: 'sheet-text' }, h('strong', {}, title), h('small', {}, text)), icon('next', 16));
+  openSheet('What would you like to do?', (close) => h('div', { class: 'sheet-options' },
+    option('#/dispense', 'dispense', 'Dispense', 'Take stock off the shelf, oldest batch first')(close),
+    option('#/receive', 'receive', 'Receive stock', 'Add a delivery, batch by batch')(close),
+    aiConfig.provider && option('#/receive', 'camera', 'Scan an invoice', 'Photograph the paperwork and let AI read it',
+      () => document.querySelector('.scan-card input[capture]')?.click())(close)));
 }
 
 /* ---------- Today ---------- */
@@ -414,7 +453,7 @@ function viewStock(id, params) {
         h('label', { class: 'search' }, icon('search', 18),
           h('input', { type: 'search', placeholder: 'Search medicines', 'aria-label': 'Search medicines', oninput: (e) => { query = e.target.value; paint(); } })),
         chips),
-      h('div', { class: 'table-wrap' }, h('table', { class: 'table clickable' },
+      h('div', { class: 'table-wrap' }, h('table', { class: 'table clickable stock-table' },
         h('thead', {}, h('tr', {},
           h('th', { scope: 'col' }, 'Medicine'), h('th', { scope: 'col' }, 'In stock'), h('th', { scope: 'col', class: 'hide-sm' }, 'Next expiry'),
           h('th', { scope: 'col', class: 'num hide-sm' }, 'Days of stock'), h('th', { scope: 'col' }, 'Status'))),
@@ -662,12 +701,12 @@ function reviewCard() {
       refresh();
     };
     tr.append(
-      ...fields.map(([key, text, cls]) => h('td', { class: cls }, h('input', {
+      ...fields.map(([key, text, cls]) => h('td', { class: `${cls ?? ''} f-${key}`.trim(), 'data-label': text }, h('input', {
         value: String(row[key] ?? ''), 'aria-label': text, inputmode: key === 'qty' ? 'numeric' : key === 'unitCost' ? 'decimal' : null,
         oninput: (e) => { row[key] = e.target.value; check(); },
       }))),
       status,
-      h('td', {}, btn('', {
+      h('td', { class: 'row-remove' }, btn('', {
         icon: 'close', kind: 'ghost', size: 'sm', title: 'Remove this line',
         onclick: () => {
           scan.rows = scan.rows.filter((r) => r !== row);
@@ -789,6 +828,14 @@ function viewDispense(prefillId) {
   const pre = findMed(prefillId);
   if (pre && onHand(pre) > 0) select.value = pre.id;
   const qty = h('input', { name: 'qty', type: 'number', min: 1, step: 1, inputmode: 'numeric', required: true, placeholder: '0', oninput: () => update() });
+  const nudge = (delta) => {
+    qty.value = Math.max(0, (Number(qty.value) || 0) + delta) || '';
+    update();
+  };
+  const stepper = h('div', { class: 'stepper' },
+    btn('', { icon: 'minus', title: 'One fewer', onclick: () => nudge(-1) }),
+    qty,
+    btn('', { icon: 'plus', title: 'One more', onclick: () => nudge(1) }));
   const note = h('input', { name: 'note', autocomplete: 'off', placeholder: 'Prescription number or ward' });
 
   function update() {
@@ -817,7 +864,7 @@ function viewDispense(prefillId) {
     },
   },
   field('Medicine', select),
-  h('div', { class: 'row' }, field('Units', qty), field('Note (optional)', note, 'Stays on this device. Never sent to the AI.')),
+  h('div', { class: 'row' }, field('Units', stepper), field('Note (optional)', note, 'Stays on this device. Never sent to the AI.')),
   plan,
   h('div', { class: 'actions' }, btn('Dispense', { icon: 'check', kind: 'primary', type: 'submit' })));
   queueMicrotask(update);
@@ -1199,16 +1246,30 @@ function currentRoute() {
   return VIEWS[name] ? { name, arg: decoded, params: new URLSearchParams(query) } : { name: 'dashboard', arg: '', params: new URLSearchParams() };
 }
 
+let titleWatcher = null;
+
 function render() {
   const { name, arg, params } = currentRoute();
   if (name !== 'dashboard') briefingOut = null;
   renderChrome(name);
   document.title = `${TITLES[name]} · MedShelf`;
   main.replaceChildren(VIEWS[name](arg, params));
+  // Phones: the page title slides into the top bar once the big heading scrolls away.
+  topbarTitle.textContent = name === 'dashboard' ? TITLES[name] : main.querySelector('h1')?.textContent ?? TITLES[name];
+  titleWatcher?.disconnect();
+  const heading = main.querySelector('h1');
+  topbar.classList.toggle('show-title', false);
+  if (heading && 'IntersectionObserver' in window) {
+    titleWatcher = new IntersectionObserver(([entry]) => topbar.classList.toggle('show-title', !entry.isIntersecting), { rootMargin: '-56px 0px 0px 0px' });
+    titleWatcher.observe(heading);
+  }
 }
 
 function afterNavigate() {
   render();
+  main.classList.remove('enter');
+  void main.offsetWidth; // restart the entrance animation
+  main.classList.add('enter');
   const { name, params } = currentRoute();
   const section = params.get('section');
   if (section) requestAnimationFrame(() => document.getElementById(section)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
