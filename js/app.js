@@ -831,7 +831,7 @@ function viewDispense(prefillId) {
     }));
   const pre = findMed(prefillId);
   if (pre && onHand(pre) > 0) select.value = pre.id;
-  const qty = h('input', { name: 'qty', type: 'number', min: 1, step: 1, inputmode: 'numeric', required: true, placeholder: '0', oninput: () => update() });
+  const qty = h('input', { id: 'issue-qty', name: 'qty', type: 'number', min: 1, step: 1, inputmode: 'numeric', required: true, placeholder: '0', oninput: () => update() });
   const nudge = (delta) => {
     qty.value = Math.max(0, (Number(qty.value) || 0) + delta) || '';
     update();
@@ -868,7 +868,10 @@ function viewDispense(prefillId) {
     },
   },
   field('Medicine', select),
-  h('div', { class: 'row' }, field('Units', stepper), field('Note (optional)', note, 'Stays on this device. Never sent to the AI.')),
+  h('div', { class: 'row' },
+    // Not field(): a wrapping <label> would label the "One fewer" button, and a click on "Units" would press it.
+    h('div', { class: 'field' }, h('label', { class: 'field-label', for: 'issue-qty' }, 'Units'), stepper),
+    field('Note (optional)', note, 'Stays on this device. Never sent to the AI.')),
   plan,
   h('div', { class: 'actions' }, btn('Record units issued', { icon: 'check', kind: 'primary', type: 'submit' })));
   queueMicrotask(update);
